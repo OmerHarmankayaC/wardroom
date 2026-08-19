@@ -1,0 +1,46 @@
+# Wardroom .gitignore — the public repo carries only the product (D-8).
+# Never remove the secrets or internal/ entries.
+
+# Process artifacts — deliberately untracked (BACKLOG D-8)
+/internal/
+/CLAUDE.md
+/plans/
+
+# Secrets — never committed. Keep .env.example (shape only, no values).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Machine-local tooling state
+.claude/settings.local.json
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+build/
+*.log
+
+# Data
+*.sqlite3
+*.db
+dumps/
