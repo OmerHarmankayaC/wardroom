@@ -44,5 +44,4 @@ can't read or fix. Wardroom takes a third path:
 
 ## License
 
-Not yet chosen (permissive open source). Will appear here before the first
-release.
+MIT — see [LICENSE](LICENSE).
