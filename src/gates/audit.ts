@@ -1,0 +1,106 @@
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { wardroomPaths } from '../config/paths.js';
+
+/**
+ * The gate audit log (SDD §3.1): `.wardroom/run/gates/audit.jsonl`,
+ * append-only, one JSON object per line.
+ *
+ * It is a separate file from the entries because the audit trail is never
+ * archived while entries one day may be (FR-3.2, BACKLOG D-29, B-11). It is
+ * also written by a different mechanism, deliberately: entries go through
+ * ../fs/atomic.ts, which replaces a whole file, and replacing a whole file is
+ * the one thing an append-only log must never do.
+ *
+ * The line is written BEFORE the action it records, so a crash mid-action
+ * leaves evidence rather than silence. That ordering is enforced by
+ * {@link recordThenAct} rather than left to each call site to remember: a
+ * convention every caller must observe is a convention one caller eventually
+ * will not.
+ */
+
+export const AUDIT_EVENTS = ['enqueued', 'parked', 'decided'] as const;
+export type AuditEvent = (typeof AUDIT_EVENTS)[number];
+
+export interface AuditLine {
+  readonly ts: string;
+  readonly gateId: string;
+  readonly event: AuditEvent;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+interface OnDiskLine {
+  ts: string;
+  gate_id: string;
+  event: AuditEvent;
+  payload: Record<string, unknown>;
+}
+
+/** Appends one line. Never reads, never rewrites, never truncates. */
+export function appendAuditLine(root: string, line: AuditLine): void {
+  const { gatesDir, auditLog } = wardroomPaths(root);
+  mkdirSync(gatesDir, { recursive: true });
+
+  const onDisk: OnDiskLine = {
+    ts: line.ts,
+    gate_id: line.gateId,
+    event: line.event,
+    payload: { ...line.payload },
+  };
+  appendFileSync(auditLog, `${JSON.stringify(onDisk)}\n`);
+}
+
+/**
+ * Writes the audit line, then performs the action.
+ *
+ * If the action throws, the line stays: the log records what was attempted,
+ * which is exactly what a crash between the two must leave behind. The reverse
+ * order would lose the record of every action that failed halfway, and those
+ * are the ones anyone reading the log later is looking for.
+ */
+export function recordThenAct<T>(root: string, line: AuditLine, action: () => T): T {
+  appendAuditLine(root, line);
+  return action();
+}
+
+/**
+ * Every line in the log, oldest first.
+ *
+ * A trailing partial line is ignored rather than raised. A process killed
+ * mid-append can leave one, and refusing to read the whole log because of its
+ * last few bytes would lose the evidence the log exists to keep. Anything else
+ * unparsable is a corrupted trail and is reported.
+ */
+export function readAuditLines(root: string): AuditLine[] {
+  let text: string;
+  try {
+    text = readFileSync(wardroomPaths(root).auditLog, 'utf8');
+  } catch {
+    return [];
+  }
+
+  const complete = text.split('\n');
+  // The split's last element is the text after the final newline: empty for a
+  // cleanly terminated log, a partial record otherwise. Either way it is not a
+  // line that was finished being written.
+  complete.pop();
+
+  return complete.map((line, index) => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch (error) {
+      throw new Error(
+        `${wardroomPaths(root).auditLog} line ${index + 1} is not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const record = raw as OnDiskLine;
+    return {
+      ts: record.ts,
+      gateId: record.gate_id,
+      event: record.event,
+      payload: record.payload,
+    };
+  });
+}

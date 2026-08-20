@@ -56,3 +56,11 @@ export {
   readEntry,
   writeEntry,
 } from './gates/store.js';
+export {
+  AUDIT_EVENTS,
+  type AuditEvent,
+  type AuditLine,
+  appendAuditLine,
+  readAuditLines,
+  recordThenAct,
+} from './gates/audit.js';
