@@ -268,8 +268,10 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
     });
 
     // No baseline is not a skipped rule: a document with nothing to differ
-    // from has nothing for its version to have to differ from either.
-    expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'doc-baseline.json' });
+    // from has nothing for its version to have to differ from either. The
+    // verdict says which it was, so "nothing to compare" is never read as
+    // "compared and clean".
+    expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'no-baseline' });
   });
 
   it('does not apply the version rule to a document that carries no version', () => {
@@ -321,6 +323,19 @@ describe('the occasion (FR-7.1)', () => {
     });
 
     expect(verdict.blocks[0]).toContain('not green');
+  });
+
+  it('reports no-baseline rather than naming a record that is not there', () => {
+    const config = configFor(UNTRACKED_DOCS);
+    write(join(UNTRACKED_DOCS, 'SRS.md'), srs('1.3'));
+    write('.gitignore', '/internal/\n');
+    git('add', '.gitignore');
+    git('commit', '-q', '-m', 'ignore the document root');
+
+    expect(
+      checkCommit(root, config, { stagedPaths: stagedSrs(UNTRACKED_DOCS), occasion: boundary })
+        .baselineSource,
+    ).toBe('no-baseline');
   });
 
   it('blocks a checkpoint commit and names the two occasions it expected', () => {

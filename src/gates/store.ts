@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { wardroomPaths } from '../config/paths.js';
 import { atomicWriteFile } from '../fs/atomic.js';
+import { isJsonObject } from '../json/guards.js';
 import { TOUR_STATES, type TourState } from '../state/marker.js';
 import { GATE_ID_PATTERN } from './id.js';
 import { previewProblem } from './preview.js';
@@ -85,16 +86,12 @@ function toOnDisk(entry: GateEntry): OnDiskEntry {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function isOptionalString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }
 
 function collectProblems(raw: unknown, problems: string[]): void {
-  if (!isRecord(raw)) {
+  if (!isJsonObject(raw)) {
     problems.push('the entry is not a JSON object.');
     return;
   }
@@ -137,7 +134,7 @@ function collectProblems(raw: unknown, problems: string[]): void {
 
   if (GATE_CLASSES.includes(raw.class as GateClass)) {
     const gateClass = raw.class as GateClass;
-    const preview = isRecord(raw.preview) ? { ...raw.preview, kind: gateClass } : raw.preview;
+    const preview = isJsonObject(raw.preview) ? { ...raw.preview, kind: gateClass } : raw.preview;
     const problem = previewProblem(gateClass, preview);
     if (problem !== null) problems.push(problem);
   }

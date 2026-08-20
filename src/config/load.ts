@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isJsonObject } from '../json/guards.js';
 import { DURATION_GRAMMAR, type Duration, parseDuration } from './duration.js';
 import { wardroomPaths } from './paths.js';
 import {
@@ -25,10 +26,6 @@ export class ConfigError extends Error {
     this.configFile = configFile;
     this.problems = problems;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function checkString(raw: Record<string, unknown>, key: string, problems: string[]): void {
@@ -74,7 +71,7 @@ function checkVerify(raw: Record<string, unknown>, problems: string[]): void {
 
 function checkStack(raw: Record<string, unknown>, problems: string[]): void {
   const stack = raw.stack;
-  if (!isRecord(stack)) {
+  if (!isJsonObject(stack)) {
     problems.push('stack: must be an object with language, runtime and package_manager.');
     return;
   }
@@ -87,13 +84,13 @@ function checkStack(raw: Record<string, unknown>, problems: string[]): void {
 
 function checkUsageBudget(raw: Record<string, unknown>, problems: string[]): void {
   const budget = raw.usage_budget;
-  if (!isRecord(budget) || typeof budget.usd !== 'number' || !(budget.usd > 0)) {
+  if (!isJsonObject(budget) || typeof budget.usd !== 'number' || !(budget.usd > 0)) {
     problems.push('usage_budget: must be an object with a positive `usd` ceiling (NFR-4).');
   }
 }
 
 function validate(raw: unknown, problems: string[]): void {
-  if (!isRecord(raw)) {
+  if (!isJsonObject(raw)) {
     problems.push(`the contract must be a JSON object, got ${describe(raw)}.`);
     return;
   }

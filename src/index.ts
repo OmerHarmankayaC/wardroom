@@ -95,6 +95,7 @@ export {
   COMMIT_OCCASIONS,
   WIP_SUBJECT_PREFIX,
   type CommitOccasion,
+  type CommitOccasionKind,
   type CommitRequest,
   type CommitVerdict,
   type JobBoundaryOccasion,
@@ -116,3 +117,4 @@ export {
   documentVersion,
   hasChangeLogRow,
 } from './documents/set.js';
+export { isFilledString, isJsonObject } from './json/guards.js';

@@ -1,3 +1,4 @@
+import { isFilledString, isJsonObject } from '../json/guards.js';
 import { GATE_CLASSES, type GateClass, type GatePreview } from './schema.js';
 
 /**
@@ -11,17 +12,9 @@ import { GATE_CLASSES, type GateClass, type GatePreview } from './schema.js';
  * its problems too.
  */
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function filled(value: unknown): value is string {
-  return typeof value === 'string' && value.trim() !== '';
-}
-
 /** Reports a missing or blank string field. */
 function checkText(source: Record<string, unknown>, field: string, problems: string[]): void {
-  if (!filled(source[field])) {
+  if (!isFilledString(source[field])) {
     problems.push(
       `preview.${field}: must be a non-empty string, describing what the owner approves.`,
     );
@@ -48,7 +41,8 @@ function checkTextList(
     return;
   }
   value.forEach((entry, index) => {
-    if (!filled(entry)) problems.push(`preview.${field}[${index}]: must be a non-empty string.`);
+    if (!isFilledString(entry))
+      problems.push(`preview.${field}[${index}]: must be a non-empty string.`);
   });
 }
 
@@ -62,7 +56,11 @@ function checkPush(preview: Record<string, unknown>, problems: string[]): void {
     );
   } else {
     commits.forEach((commit, index) => {
-      if (!isRecord(commit) || !filled(commit.hash) || !filled(commit.subject)) {
+      if (
+        !isJsonObject(commit) ||
+        !isFilledString(commit.hash) ||
+        !isFilledString(commit.subject)
+      ) {
         problems.push(`preview.commits[${index}]: must carry a non-empty hash and subject.`);
       }
     });
@@ -92,10 +90,10 @@ function checkScopeChange(preview: Record<string, unknown>, problems: string[]):
   }
   sections.forEach((section, index) => {
     if (
-      !isRecord(section) ||
-      !filled(section.document) ||
-      !filled(section.section) ||
-      !filled(section.diff)
+      !isJsonObject(section) ||
+      !isFilledString(section.document) ||
+      !isFilledString(section.section) ||
+      !isFilledString(section.diff)
     ) {
       problems.push(`preview.sections[${index}]: must name a document, a section, and its diff.`);
     }
@@ -147,7 +145,7 @@ export function previewProblem(gateClass: GateClass, preview: unknown): string |
   if (!GATE_CLASSES.includes(gateClass)) {
     return `class: must be one of ${GATE_CLASSES.join(', ')} (SRS TD-2).`;
   }
-  if (!isRecord(preview)) {
+  if (!isJsonObject(preview)) {
     return `preview: missing. A ${gateClass} gate is not presentable without one (SDD §3.1).`;
   }
   if (preview.kind !== gateClass) {

@@ -28,8 +28,14 @@ import { fileAtHead, headSubject, isPathTracked } from '../state/git.js';
  * rule an agent talks itself out of one checkpoint at a time.
  */
 
-/** The two occasions FR-7.1 allows. The whole list. */
+/**
+ * The two occasions FR-7.1 allows. The whole list: there is no periodic
+ * autosave commit, no per file commit, and no squash step later, because
+ * squashing would rewrite history, which is the owner's operation and never
+ * Wardroom's (SDD §4.5).
+ */
 export const COMMIT_OCCASIONS = ['job-boundary', 'wip-stop'] as const;
+export type CommitOccasionKind = (typeof COMMIT_OCCASIONS)[number];
 
 /** How a WIP stop announces itself in the log, so a second one can be seen. */
 export const WIP_SUBJECT_PREFIX = 'WIP:';
@@ -67,20 +73,27 @@ export interface CommitVerdict {
   readonly allowed: boolean;
   /** One stated reason per failed condition. Empty when the commit may proceed. */
   readonly blocks: readonly string[];
-  /** Which baseline the document check used, so a report need not re-derive it. */
-  readonly baselineSource: 'head' | 'doc-baseline.json' | 'none';
+  /**
+   * Which baseline the document check actually used.
+   *
+   * `no-baseline` is distinct from `doc-baseline.json` on purpose: a check
+   * that had no record to compare against is not the same answer as a check
+   * that compared and found nothing wrong, and reporting them as one is how
+   * "no data" gets read as "zero".
+   */
+  readonly baselineSource: 'head' | 'doc-baseline.json' | 'no-baseline' | 'none';
 }
 
 function isJobBoundary(occasion: CommitOccasion): occasion is JobBoundaryOccasion {
-  return occasion.kind === 'job-boundary';
+  return occasion.kind === COMMIT_OCCASIONS[0];
 }
 
 function isWipStop(occasion: CommitOccasion): occasion is WipStopOccasion {
-  return occasion.kind === 'wip-stop';
+  return occasion.kind === COMMIT_OCCASIONS[1];
 }
 
-const EXPECTED =
-  'Wardroom commits at a job boundary, with the acceptance criterion passed and the work green, or once as a WIP commit when stopping with unfinished work. There is no third occasion (FR-7.1, BACKLOG D-26)';
+/** Stated from COMMIT_OCCASIONS, so the list and the refusal cannot drift apart. */
+const EXPECTED = `Wardroom commits on ${COMMIT_OCCASIONS.length} occasions and no others: at a job boundary (${COMMIT_OCCASIONS[0]}), with the acceptance criterion passed and the work green, or once as a WIP commit when stopping with unfinished work (${COMMIT_OCCASIONS[1]}). FR-7.1, BACKLOG D-26`;
 
 function checkOccasion(root: string, occasion: CommitOccasion, blocks: string[]): void {
   if (isJobBoundary(occasion)) {
@@ -192,7 +205,8 @@ function checkDocuments(
     }
   }
 
-  return tracked ? 'head' : 'doc-baseline.json';
+  if (tracked) return 'head';
+  return recorded === null ? 'no-baseline' : 'doc-baseline.json';
 }
 
 /**
