@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { DURATION_GRAMMAR, type Duration, parseDuration } from './duration.js';
 import { wardroomPaths } from './paths.js';
 import {
   AUTH_MODES,
@@ -25,9 +26,6 @@ export class ConfigError extends Error {
     this.problems = problems;
   }
 }
-
-/** Duration with an explicit unit, e.g. `24h`. */
-const DURATION = /^[1-9][0-9]*(s|m|h|d)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -110,8 +108,10 @@ function validate(raw: unknown, problems: string[]): void {
   if (!AUTH_MODES.includes(raw.auth_mode as AuthMode)) {
     problems.push(`auth_mode: must be one of ${AUTH_MODES.join(', ')} (SDD Appendix A.3).`);
   }
-  if (typeof raw.gate_wait !== 'string' || !DURATION.test(raw.gate_wait)) {
-    problems.push('gate_wait: must be a duration with a unit, e.g. `24h` (FR-3.3).');
+  if (parseDuration(raw.gate_wait) === null) {
+    problems.push(
+      `gate_wait: must be ${DURATION_GRAMMAR}. Got ${describe(raw.gate_wait)} (FR-3.3, BACKLOG D-22).`,
+    );
   }
   if (!Number.isInteger(raw.attempt_budget) || (raw.attempt_budget as number) < 1) {
     problems.push('attempt_budget: must be a positive whole number of attempts (FR-1.3).');
@@ -139,7 +139,7 @@ function build(raw: Record<string, unknown>): ProjectConfig {
     },
     verify: Object.freeze([...(raw.verify as string[])]),
     authMode: raw.auth_mode as AuthMode,
-    gateWait: raw.gate_wait as string,
+    gateWait: parseDuration(raw.gate_wait) as Duration,
     attemptBudget: raw.attempt_budget as number,
     usageBudget: { usd: usageBudget.usd },
     trackRuntime: raw.track_runtime as boolean,

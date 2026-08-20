@@ -4,6 +4,8 @@
  * an authentication path, never a key (SDD §3.0).
  */
 
+import type { Duration } from './duration.js';
+
 /** Selects the canonical document set (SRS §3.2). */
 export const PROJECT_LEVELS = ['light', 'standard', 'full'] as const;
 export type ProjectLevel = (typeof PROJECT_LEVELS)[number];
@@ -37,8 +39,13 @@ export interface ProjectConfig {
    */
   readonly verify: readonly string[];
   readonly authMode: AuthMode;
-  /** How long a pending gate waits before it parks the tour (FR-3.3). */
-  readonly gateWait: string;
+  /**
+   * How long a pending gate waits before it parks the tour (FR-3.3). Parsed,
+   * not raw: after the loader has read it, the text exists only inside
+   * `parseDuration`, so no consumer can reinterpret the grammar its own way
+   * (BACKLOG B-10).
+   */
+  readonly gateWait: Duration;
   /** Failed verification attempts before a tour-budget gate (FR-1.3). */
   readonly attemptBudget: number;
   readonly usageBudget: UsageBudget;

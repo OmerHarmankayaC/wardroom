@@ -5,6 +5,13 @@
  * (SDD §5.2) arrive in later tours. This module re-exports what exists.
  */
 
+export {
+  DURATION_GRAMMAR,
+  DURATION_UNITS,
+  type Duration,
+  type DurationUnit,
+  parseDuration,
+} from './config/duration.js';
 export { ConfigError, loadConfig } from './config/load.js';
 export { type WardroomPaths, ensureRunDir, wardroomPaths } from './config/paths.js';
 export {

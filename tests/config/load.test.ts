@@ -123,6 +123,51 @@ describe('the green definition (FR-1.5)', () => {
   });
 });
 
+describe('the gate_wait grammar (BACKLOG B-10, D-22)', () => {
+  it('exposes a parsed duration, not the text that was written', () => {
+    writeConfig({ ...validConfig, gate_wait: '24h' });
+
+    // No consumer reads the raw string: after the loader, the text exists only
+    // inside parseDuration. A consumer handed `24h` would have to reimplement
+    // the grammar to use it, and the second implementation is where they drift.
+    expect(loadConfig(root).gateWait).toEqual({ value: 24, unit: 'h', milliseconds: 86_400_000 });
+  });
+
+  it('rejects a compound duration and states the grammar', () => {
+    writeConfig({ ...validConfig, gate_wait: '1d12h' });
+
+    expect(() => loadConfig(root)).toThrow(/1d12h/);
+    expect(() => loadConfig(root)).toThrow(/no compound forms/);
+  });
+
+  it.each(['24', '0h', '24H', '', 'soon'])('rejects %s', (gate_wait) => {
+    writeConfig({ ...validConfig, gate_wait });
+
+    expect(() => loadConfig(root)).toThrow(ConfigError);
+  });
+
+  it('rejects a duration that is not text at all', () => {
+    writeConfig({ ...validConfig, gate_wait: 86400 });
+
+    expect(() => loadConfig(root)).toThrow(/gate_wait/);
+  });
+
+  it('reports the duration alongside the other problems, not before them', () => {
+    writeConfig({ ...validConfig, gate_wait: '1d12h', attempt_budget: 0, verify: [] });
+
+    try {
+      loadConfig(root);
+      expect.unreachable('a triply broken contract must not load');
+    } catch (error) {
+      const problems = (error as ConfigError).problems;
+      expect(problems).toHaveLength(3);
+      expect(problems.some((problem) => problem.startsWith('gate_wait:'))).toBe(true);
+      expect(problems.some((problem) => problem.startsWith('attempt_budget:'))).toBe(true);
+      expect(problems.some((problem) => problem.startsWith('verify:'))).toBe(true);
+    }
+  });
+});
+
 describe('contract validation', () => {
   it('reports an absent configuration file rather than assuming defaults', () => {
     const error = loadFailure();
