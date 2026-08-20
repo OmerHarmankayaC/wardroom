@@ -44,3 +44,8 @@ build/
 *.sqlite3
 *.db
 dumps/
+
+# Wardroom runtime records — track_runtime: false (BACKLOG D-15).
+# Excludes run/ only: .wardroom/config.json carries the green definition and
+# stays tracked (D-13).
+.wardroom/run/
