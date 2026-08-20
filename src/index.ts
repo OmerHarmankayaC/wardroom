@@ -64,3 +64,15 @@ export {
   readAuditLines,
   recordThenAct,
 } from './gates/audit.js';
+export {
+  GateAlreadyDecidedError,
+  GateNotFoundError,
+  GateRefusedError,
+  type EnqueueRequest,
+  type QueueOptions,
+  decide,
+  enqueue,
+  list,
+  park,
+  show,
+} from './gates/queue.js';
