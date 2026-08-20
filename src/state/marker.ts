@@ -1,6 +1,6 @@
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { wardroomPaths } from '../config/paths.js';
+import { atomicWriteFile } from '../fs/atomic.js';
 
 /**
  * The tour state marker (SDD §3.3).
@@ -71,32 +71,14 @@ function toOnDisk(marker: StateMarker): OnDiskMarker {
   };
 }
 
-let writeCounter = 0;
-
 /**
- * Writes the marker atomically: serialize into a temporary file in the same
- * directory, then rename over the target. Rename within one directory is
- * atomic, so a process killed at any instant leaves either the previous marker
- * or the new one, never half of one (SDD §3.3, D-20).
- *
- * The temporary name is unique per write so two writers cannot land on each
- * other's partial file.
+ * Writes the marker atomically (SDD §3.3, D-20). The mechanism lives in
+ * ../fs/atomic.ts because gate entries need the same guarantee for the same
+ * reason, and a second copy of it would be a second place to get it wrong.
  */
 export function writeMarker(root: string, marker: StateMarker): void {
-  const { runDir, stateFile } = wardroomPaths(root);
-  const temporary = join(runDir, `.state.json.${process.pid}.${writeCounter++}.tmp`);
-
-  writeFileSync(temporary, `${JSON.stringify(toOnDisk(marker), null, 2)}\n`);
-  try {
-    renameSync(temporary, stateFile);
-  } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch {
-      // The rename failure is the one worth reporting.
-    }
-    throw error;
-  }
+  const { stateFile } = wardroomPaths(root);
+  atomicWriteFile(stateFile, `${JSON.stringify(toOnDisk(marker), null, 2)}\n`);
 }
 
 function isTourState(value: unknown): value is TourState {
