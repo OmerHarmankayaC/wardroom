@@ -21,3 +21,13 @@ export {
   applyTrackingPolicy,
   runtimeIgnoreEntries,
 } from './config/tracking.js';
+export { NotARepositoryError, headCommit, isWorkingTreeDirty } from './state/git.js';
+export {
+  TOUR_STATES,
+  type MarkerRead,
+  type StateMarker,
+  type TourState,
+  readMarker,
+  writeMarker,
+} from './state/marker.js';
+export { type NextAction, type ResumeResult, resume } from './state/resume.js';

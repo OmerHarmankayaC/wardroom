@@ -1,0 +1,185 @@
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { wardroomPaths } from '../config/paths.js';
+
+/**
+ * The tour state marker (SDD §3.3).
+ *
+ * The marker is a hint, not evidence: §4.4 validates it against the repository
+ * before trusting it. What this module owes that procedure is a marker that is
+ * either wholly present or wholly absent, and an honest answer when it is
+ * neither (BACKLOG D-20).
+ */
+
+/** The eight states of SDD §3.2. Process death is deliberately not among them. */
+export const TOUR_STATES = [
+  'IDLE',
+  'PLANNING',
+  'EXECUTING',
+  'VERIFYING',
+  'CLOSING',
+  'GATED',
+  'PARKED',
+  'FAILED',
+] as const;
+export type TourState = (typeof TOUR_STATES)[number];
+
+/** The three cross-cutting states remember the state they interrupted. */
+const INTERRUPTING_STATES: readonly TourState[] = ['GATED', 'PARKED'];
+
+export interface StateMarker {
+  readonly state: TourState;
+  readonly tourId: string | null;
+  readonly jobIndex: number | null;
+  /** The state to return to once a gate is decided (SDD §3.2). */
+  readonly interruptedState: TourState | null;
+  /** Failed verification attempts so far (FR-1.3). */
+  readonly attemptCount: number;
+  readonly headCommit: string | null;
+  readonly updatedAt: string;
+}
+
+/**
+ * What a read found. `unreadable` is a distinct answer from `absent` on
+ * purpose: the two mean opposite things to resumption, and collapsing them
+ * silently abandons an open tour (SDD §4.4 step 1, D-20).
+ */
+export type MarkerRead =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable'; readonly reason: string }
+  | { readonly kind: 'ok'; readonly marker: StateMarker };
+
+interface OnDiskMarker {
+  state: string;
+  tour_id: string | null;
+  job_index: number | null;
+  interrupted_state: string | null;
+  attempt_count: number;
+  head_commit: string | null;
+  updated_at: string;
+}
+
+function toOnDisk(marker: StateMarker): OnDiskMarker {
+  return {
+    state: marker.state,
+    tour_id: marker.tourId,
+    job_index: marker.jobIndex,
+    interrupted_state: marker.interruptedState,
+    attempt_count: marker.attemptCount,
+    head_commit: marker.headCommit,
+    updated_at: marker.updatedAt,
+  };
+}
+
+let writeCounter = 0;
+
+/**
+ * Writes the marker atomically: serialize into a temporary file in the same
+ * directory, then rename over the target. Rename within one directory is
+ * atomic, so a process killed at any instant leaves either the previous marker
+ * or the new one — never half of one (SDD §3.3, D-20).
+ *
+ * The temporary name is unique per write so two writers cannot land on each
+ * other's partial file.
+ */
+export function writeMarker(root: string, marker: StateMarker): void {
+  const { runDir, stateFile } = wardroomPaths(root);
+  const temporary = join(runDir, `.state.json.${process.pid}.${writeCounter++}.tmp`);
+
+  writeFileSync(temporary, `${JSON.stringify(toOnDisk(marker), null, 2)}\n`);
+  try {
+    renameSync(temporary, stateFile);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The rename failure is the one worth reporting.
+    }
+    throw error;
+  }
+}
+
+function isTourState(value: unknown): value is TourState {
+  return typeof value === 'string' && (TOUR_STATES as readonly string[]).includes(value);
+}
+
+function isOptionalInteger(value: unknown): value is number | null {
+  return value === null || (Number.isInteger(value) && (value as number) >= 0);
+}
+
+function isOptionalString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+/** Returns the schema problem with a parsed marker, or null if it holds. */
+function schemaProblem(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return 'the marker is not a JSON object';
+  }
+  const record = raw as Record<string, unknown>;
+
+  if (!isTourState(record.state)) {
+    return `state must be one of ${TOUR_STATES.join(', ')}, got ${JSON.stringify(record.state)}`;
+  }
+  if (!isOptionalString(record.tour_id)) return 'tour_id must be a string or null';
+  if (!isOptionalInteger(record.job_index)) {
+    return 'job_index must be a non-negative whole number or null';
+  }
+  if (record.interrupted_state !== null && !isTourState(record.interrupted_state)) {
+    return 'interrupted_state must name a state or be null';
+  }
+  if (!Number.isInteger(record.attempt_count) || (record.attempt_count as number) < 0) {
+    return 'attempt_count must be a non-negative whole number';
+  }
+  if (!isOptionalString(record.head_commit)) return 'head_commit must be a string or null';
+  if (typeof record.updated_at !== 'string' || record.updated_at === '') {
+    return 'updated_at must be a timestamp';
+  }
+  if (INTERRUPTING_STATES.includes(record.state) && record.interrupted_state === null) {
+    return `${record.state} must carry the interrupted_state it returns to (SDD §3.2)`;
+  }
+  return null;
+}
+
+/**
+ * Reads the marker. Never throws for a marker that is merely bad: an absent
+ * marker and an unreadable one are both answers the resume procedure knows
+ * what to do with, and neither is an exception.
+ */
+export function readMarker(root: string): MarkerRead {
+  const { stateFile } = wardroomPaths(root);
+
+  let text: string;
+  try {
+    text = readFileSync(stateFile, 'utf8');
+  } catch {
+    return { kind: 'absent' };
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    return {
+      kind: 'unreadable',
+      reason: `not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const problem = schemaProblem(raw);
+  if (problem !== null) return { kind: 'unreadable', reason: problem };
+
+  const record = raw as unknown as OnDiskMarker;
+  return {
+    kind: 'ok',
+    marker: {
+      state: record.state as TourState,
+      tourId: record.tour_id,
+      jobIndex: record.job_index,
+      interruptedState: record.interrupted_state as TourState | null,
+      attemptCount: record.attempt_count,
+      headCommit: record.head_commit,
+      updatedAt: record.updated_at,
+    },
+  };
+}
