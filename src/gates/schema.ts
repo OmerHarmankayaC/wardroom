@@ -1,3 +1,4 @@
+import type { TreeChange } from '../state/git.js';
 import type { TourState } from '../state/marker.js';
 
 /**
@@ -14,6 +15,7 @@ export const GATE_CLASSES = [
   'destructive',
   'secrets',
   'tour-budget',
+  'dirty-tree',
 ] as const;
 export type GateClass = (typeof GATE_CLASSES)[number];
 
@@ -71,6 +73,16 @@ export interface TourBudgetPreview {
 }
 
 /**
+ * The changed paths in the working tree, each with its change type (D-36).
+ * Never empty: an empty list means the tree is clean and the gate should not
+ * have been raised, so it is refused at enqueue (D-32).
+ */
+export interface DirtyTreePreview {
+  readonly kind: 'dirty-tree';
+  readonly changes: readonly TreeChange[];
+}
+
+/**
  * Class-specific evidence. The discriminant is the gate class, so a push
  * preview cannot be attached to a secrets gate: a preview the owner cannot
  * read against the action is the same as no preview, and a gate without its
@@ -82,7 +94,8 @@ export type GatePreview =
   | ScopeChangePreview
   | DestructivePreview
   | SecretsPreview
-  | TourBudgetPreview;
+  | TourBudgetPreview
+  | DirtyTreePreview;
 
 export interface GateEntry {
   readonly gateId: string;

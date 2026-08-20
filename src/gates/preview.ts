@@ -1,4 +1,5 @@
 import { isFilledString, isJsonObject } from '../json/guards.js';
+import { TREE_CHANGE_TYPES } from '../state/git.js';
 import { GATE_CLASSES, type GateClass, type GatePreview } from './schema.js';
 
 /**
@@ -126,6 +127,34 @@ function checkTourBudget(preview: Record<string, unknown>, problems: string[]): 
   checkText(preview, 'lastFailureOutput', problems);
 }
 
+function checkDirtyTree(preview: Record<string, unknown>, problems: string[]): void {
+  const changes = preview.changes;
+  if (!Array.isArray(changes)) {
+    problems.push('preview.changes: must be the changed paths, each with its change type (D-36).');
+    return;
+  }
+  if (changes.length === 0) {
+    // Not one of the two D-32 exceptions: an empty list means the tree is
+    // clean and the gate should not have been raised, so refusing catches a
+    // bug upstream rather than asking the owner to approve nothing.
+    problems.push(
+      'preview.changes: is empty, and a clean tree raises no dirty-tree gate (D-32, D-36).',
+    );
+    return;
+  }
+  changes.forEach((change, index) => {
+    if (!isJsonObject(change) || !isFilledString(change.path)) {
+      problems.push(`preview.changes[${index}]: must carry the changed path.`);
+      return;
+    }
+    if (!(TREE_CHANGE_TYPES as readonly unknown[]).includes(change.changeType)) {
+      problems.push(
+        `preview.changes[${index}]: changeType must be one of ${TREE_CHANGE_TYPES.join(', ')} (D-36).`,
+      );
+    }
+  });
+}
+
 const CHECKS: Record<GateClass, (preview: Record<string, unknown>, problems: string[]) => void> = {
   push: checkPush,
   deployment: checkDeployment,
@@ -133,6 +162,7 @@ const CHECKS: Record<GateClass, (preview: Record<string, unknown>, problems: str
   destructive: checkDestructive,
   secrets: checkSecrets,
   'tour-budget': checkTourBudget,
+  'dirty-tree': checkDirtyTree,
 };
 
 /**

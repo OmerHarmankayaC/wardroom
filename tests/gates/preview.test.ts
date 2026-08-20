@@ -45,6 +45,13 @@ const presentable: PresentableSet = {
     attemptCount: 3,
     lastFailureOutput: '2 tests failed in tests/gates/queue.test.ts',
   },
+  'dirty-tree': {
+    kind: 'dirty-tree',
+    changes: [
+      { path: 'src/half.ts', changeType: 'modified' },
+      { path: 'notes.txt', changeType: 'untracked' },
+    ],
+  },
 };
 
 describe('previewProblem', () => {
@@ -144,6 +151,34 @@ describe('previewProblem', () => {
     });
 
     expect(problem).toContain('preview.attemptCount');
+  });
+
+  it('refuses a dirty-tree preview with no changes, because that tree is clean (D-32)', () => {
+    // An empty list means the tree is clean and the gate should not have been
+    // raised: refusing catches the bug upstream rather than presenting the
+    // owner with nothing to inspect.
+    expect(previewProblem('dirty-tree', { kind: 'dirty-tree', changes: [] })).toContain(
+      'preview.changes',
+    );
+  });
+
+  it('refuses a dirty-tree change outside the five named types (D-36)', () => {
+    const problem = previewProblem('dirty-tree', {
+      kind: 'dirty-tree',
+      changes: [{ path: 'src/half.ts', changeType: 'staged' }],
+    });
+
+    expect(problem).toContain('preview.changes[0]');
+    expect(problem).toContain('modified, added, deleted, renamed, untracked');
+  });
+
+  it('refuses a dirty-tree change with no path to point at', () => {
+    const problem = previewProblem('dirty-tree', {
+      kind: 'dirty-tree',
+      changes: [{ path: '  ', changeType: 'modified' }],
+    });
+
+    expect(problem).toContain('preview.changes[0]');
   });
 
   it('reports every problem at once rather than one per correction', () => {

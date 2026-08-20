@@ -30,12 +30,16 @@ export {
 } from './config/tracking.js';
 export {
   NotARepositoryError,
+  TREE_CHANGE_TYPES,
+  type TreeChange,
+  type TreeChangeType,
   currentBranch,
   fileAtHead,
   headCommit,
   headSubject,
   isPathTracked,
   isWorkingTreeDirty,
+  workingTreeChanges,
 } from './state/git.js';
 export {
   TOUR_STATES,
@@ -54,6 +58,7 @@ export {
   GATE_STATUSES,
   type DeploymentPreview,
   type DestructivePreview,
+  type DirtyTreePreview,
   type GateClass,
   type GateEntry,
   type GatePreview,
@@ -64,6 +69,7 @@ export {
   type TourBudgetPreview,
   isResolved,
 } from './gates/schema.js';
+export { dirtyTreeGateRequest } from './gates/dirty-tree.js';
 export {
   GateSchemaError,
   entryPath,
