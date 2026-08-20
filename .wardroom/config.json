@@ -2,6 +2,7 @@
   "name": "wardroom",
   "level": "full",
   "doc_root": "internal/docs",
+  "default_branch": "main",
   "stack": {
     "language": "TypeScript",
     "runtime": "node>=18",

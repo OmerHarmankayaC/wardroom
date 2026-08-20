@@ -28,6 +28,7 @@ function configFor(docRoot: string): ProjectConfig {
     name: 'example',
     level: 'full',
     docRoot,
+    defaultBranch: 'main',
     stack: { language: 'TypeScript', runtime: 'node>=18', packageManager: 'npm' },
     verify: ['npm test'],
     authMode: 'api_key',
@@ -396,8 +397,9 @@ describe('the occasion (FR-7.1)', () => {
     expect(checkCommit(root, config, { stagedPaths: [], occasion: { kind } }).allowed).toBe(false);
   });
 
-  it('allows a WIP stop when HEAD is an ordinary commit', () => {
+  it('allows a WIP stop on a branch off the default one', () => {
     const config = withTrackedDocuments('1.3');
+    git('checkout', '-q', '-b', 'wip/tour-2');
 
     const verdict = checkCommit(root, config, {
       stagedPaths: [],
@@ -407,8 +409,51 @@ describe('the occasion (FR-7.1)', () => {
     expect(verdict.allowed).toBe(true);
   });
 
+  it('blocks a WIP stop on the default branch, naming the branch and the rule (D-33)', () => {
+    // FR-7.1's second occasion is a single WIP commit on a branch other than
+    // default_branch. Unfinished work on the default branch looks finished,
+    // which is the failure the clause exists for.
+    const config = withTrackedDocuments('1.3');
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [],
+      occasion: { kind: 'wip-stop', reason: 'context ceiling reached mid job 6' },
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks[0]).toContain('main');
+    expect(verdict.blocks[0]).toContain('default_branch');
+    expect(verdict.blocks[0]).toContain('FR-7.1');
+  });
+
+  it('checks against the configured branch, not against a hardcoded main', () => {
+    const config = { ...withTrackedDocuments('1.3'), defaultBranch: 'trunk' };
+    // The repository is on main, and main is not this project's default
+    // branch, so the WIP stop is allowed there.
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [],
+      occasion: { kind: 'wip-stop', reason: 'context ceiling reached mid job 6' },
+    });
+
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('blocks a WIP stop on a detached HEAD, which is not a branch at all', () => {
+    const config = withTrackedDocuments('1.3');
+    git('checkout', '-q', '--detach');
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [],
+      occasion: { kind: 'wip-stop', reason: 'context ceiling reached mid job 6' },
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks[0]).toContain('detached');
+  });
+
   it('blocks a second WIP stop, because the rule allows one', () => {
     const config = withTrackedDocuments('1.3');
+    git('checkout', '-q', '-b', 'wip/tour-2');
     write('src/half.ts', 'export const half = 1;\n');
     git('add', '-A');
     git('commit', '-q', '-m', `${WIP_SUBJECT_PREFIX} job 6 half done, see report`);
@@ -424,6 +469,7 @@ describe('the occasion (FR-7.1)', () => {
 
   it('blocks a WIP stop that does not say why the tour is stopping', () => {
     const config = withTrackedDocuments('1.3');
+    git('checkout', '-q', '-b', 'wip/tour-2');
 
     expect(
       checkCommit(root, config, { stagedPaths: [], occasion: { kind: 'wip-stop', reason: '  ' } })

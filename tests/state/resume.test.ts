@@ -44,6 +44,7 @@ const config = {
   name: 'fixture',
   level: 'full',
   doc_root: 'docs',
+  default_branch: 'main',
   stack: { language: 'TypeScript', runtime: 'node>=18', package_manager: 'npm' },
   verify: ['npm test'],
   auth_mode: 'api_key',

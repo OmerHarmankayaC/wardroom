@@ -29,6 +29,7 @@ const config: ProjectConfig = {
   name: 'example',
   level: 'full',
   docRoot: 'internal/docs',
+  defaultBranch: 'main',
   stack: { language: 'TypeScript', runtime: 'node>=18', packageManager: 'npm' },
   verify: ['npm test'],
   authMode: 'api_key',

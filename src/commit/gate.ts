@@ -8,7 +8,7 @@ import {
   hasChangeLogRow,
   versionCarryingDocuments,
 } from '../documents/set.js';
-import { fileAtHead, headSubject, isPathTracked } from '../state/git.js';
+import { currentBranch, fileAtHead, headSubject, isPathTracked } from '../state/git.js';
 
 /**
  * The commit gate (SDD §4.5). Every commit Wardroom makes passes it first.
@@ -95,7 +95,32 @@ function isWipStop(occasion: CommitOccasion): occasion is WipStopOccasion {
 /** Stated from COMMIT_OCCASIONS, so the list and the refusal cannot drift apart. */
 const EXPECTED = `Wardroom commits on ${COMMIT_OCCASIONS.length} occasions and no others: at a job boundary (${COMMIT_OCCASIONS[0]}), with the acceptance criterion passed and the work green, or once as a WIP commit when stopping with unfinished work (${COMMIT_OCCASIONS[1]}). FR-7.1, BACKLOG D-26`;
 
-function checkOccasion(root: string, occasion: CommitOccasion, blocks: string[]): void {
+/**
+ * FR-7.1's second occasion is a single WIP commit on a branch other than
+ * `default_branch` (SRS §3.1, BACKLOG D-33, B-12). Unfinished work on the
+ * default branch looks finished, which is the failure the clause exists for.
+ */
+function checkWipBranch(root: string, defaultBranch: string, blocks: string[]): void {
+  const branch = currentBranch(root);
+  if (branch === null) {
+    blocks.push(
+      'occasion: HEAD is detached. A WIP stop commits on a branch other than default_branch, and a detached HEAD is not a branch at all (FR-7.1).',
+    );
+    return;
+  }
+  if (branch === defaultBranch) {
+    blocks.push(
+      `occasion: the current branch is ${branch}, which is this project's default_branch. A WIP stop commits on a branch other than that one, so unfinished work never sits on ${branch} looking finished (FR-7.1, BACKLOG D-33).`,
+    );
+  }
+}
+
+function checkOccasion(
+  root: string,
+  defaultBranch: string,
+  occasion: CommitOccasion,
+  blocks: string[],
+): void {
   if (isJobBoundary(occasion)) {
     if (!occasion.acceptancePassed) {
       blocks.push(
@@ -114,6 +139,7 @@ function checkOccasion(root: string, occasion: CommitOccasion, blocks: string[])
     if (occasion.reason.trim() === '') {
       blocks.push('occasion: a WIP stop states why the tour is stopping with work unfinished.');
     }
+    checkWipBranch(root, defaultBranch, blocks);
     const subject = headSubject(root);
     if (subject?.startsWith(WIP_SUBJECT_PREFIX)) {
       // FR-7.1 permits ONE WIP commit. A second turns the escape hatch into
@@ -227,7 +253,7 @@ export function checkCommit(
 ): CommitVerdict {
   const blocks: string[] = [];
   const baselineSource = checkDocuments(root, config, request.stagedPaths, blocks);
-  checkOccasion(root, request.occasion, blocks);
+  checkOccasion(root, config.defaultBranch, request.occasion, blocks);
 
   return { allowed: blocks.length === 0, blocks, baselineSource };
 }

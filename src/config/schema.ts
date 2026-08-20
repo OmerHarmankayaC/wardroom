@@ -31,6 +31,14 @@ export interface ProjectConfig {
   readonly level: ProjectLevel;
   /** Where the canonical documents live; `docs/` unless the project says otherwise. */
   readonly docRoot: string;
+  /**
+   * The repository's default branch (SRS §3.1, BACKLOG D-33). FR-7.1's WIP
+   * occasion requires the commit to be somewhere else, and nothing else in
+   * the contract says which branch that is. Stated, never derived: the remote
+   * needs a network call at a moment the tool must work offline, and the
+   * current branch is circular.
+   */
+  readonly defaultBranch: string;
   readonly stack: ProjectStack;
   /**
    * The green definition (SRS §3.4): an ordered list of commands, every one of

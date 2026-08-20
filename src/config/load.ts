@@ -98,6 +98,7 @@ function validate(raw: unknown, problems: string[]): void {
   checkVerify(raw, problems);
   checkString(raw, 'name', problems);
   checkString(raw, 'doc_root', problems);
+  checkString(raw, 'default_branch', problems);
 
   if (!PROJECT_LEVELS.includes(raw.level as ProjectLevel)) {
     problems.push(`level: must be one of ${PROJECT_LEVELS.join(', ')} (SRS §3.2).`);
@@ -129,6 +130,7 @@ function build(raw: Record<string, unknown>): ProjectConfig {
     name: raw.name as string,
     level: raw.level as ProjectLevel,
     docRoot: raw.doc_root as string,
+    defaultBranch: raw.default_branch as string,
     stack: {
       language: stack.language as string,
       runtime: stack.runtime as string,

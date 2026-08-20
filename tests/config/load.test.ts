@@ -15,6 +15,7 @@ const validConfig = {
   name: 'example',
   level: 'full',
   doc_root: 'docs',
+  default_branch: 'main',
   stack: { language: 'TypeScript', runtime: 'node>=18', package_manager: 'npm' },
   verify: ['npm test', 'npm run lint'],
   auth_mode: 'api_key',
@@ -60,6 +61,7 @@ describe('loadConfig', () => {
     expect(config.name).toBe('example');
     expect(config.level).toBe('full');
     expect(config.docRoot).toBe('docs');
+    expect(config.defaultBranch).toBe('main');
     expect(config.verify).toEqual(['npm test', 'npm run lint']);
     expect(config.authMode).toBe('api_key');
     expect(config.trackRuntime).toBe(true);
@@ -211,6 +213,26 @@ describe('contract validation', () => {
     writeConfig({ ...validConfig, auth_mode: 'subscription' });
 
     expect(loadConfig(root).authMode).toBe('subscription');
+  });
+
+  it('rejects a contract without default_branch rather than assuming main (D-33)', () => {
+    // Hardcoding main is wrong for any project on master or trunk, and wrong
+    // silently, which is the worst way to be wrong about where unfinished
+    // work landed.
+    const { default_branch: _omitted, ...withoutBranch } = validConfig;
+    writeConfig(withoutBranch);
+
+    const error = loadFailure();
+
+    expect(error.problems.some((p) => p.startsWith('default_branch:'))).toBe(true);
+  });
+
+  it('rejects a blank default_branch', () => {
+    writeConfig({ ...validConfig, default_branch: '  ' });
+
+    const error = loadFailure();
+
+    expect(error.problems.some((p) => p.startsWith('default_branch:'))).toBe(true);
   });
 
   it('rejects a track_runtime that is not a boolean rather than coercing it', () => {
