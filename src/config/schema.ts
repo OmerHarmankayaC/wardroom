@@ -1,6 +1,6 @@
 /**
  * The project contract (SRS §3.1): what Wardroom must know about a repository
- * before it can manage it. Small, durable and secret-free — `auth_mode` names
+ * before it can manage it. Small, durable and secret-free: `auth_mode` names
  * an authentication path, never a key (SDD §3.0).
  */
 

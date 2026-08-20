@@ -1,12 +1,12 @@
-# Wardroom .gitignore — the public repo carries only the product (D-8).
+# Wardroom .gitignore: the public repo carries only the product (D-8).
 # Never remove the secrets or internal/ entries.
 
-# Process artifacts — deliberately untracked (BACKLOG D-8)
+# Process artifacts, deliberately untracked (BACKLOG D-8)
 /internal/
 /CLAUDE.md
 /plans/
 
-# Secrets — never committed. Keep .env.example (shape only, no values).
+# Secrets, never committed. Keep .env.example (shape only, no values).
 .env
 .env.*
 !.env.example
@@ -45,7 +45,7 @@ build/
 *.db
 dumps/
 
-# Wardroom runtime records — track_runtime: false (BACKLOG D-15).
+# Wardroom runtime records, track_runtime: false (BACKLOG D-15).
 # Excludes run/ only: .wardroom/config.json carries the green definition and
 # stays tracked (D-13).
 .wardroom/run/

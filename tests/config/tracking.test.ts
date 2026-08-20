@@ -12,7 +12,7 @@ import {
 /**
  * BACKLOG D-15: `track_runtime: false` excludes `.wardroom/run/` and nothing
  * else. The rejected draft let one flag exclude all of `.wardroom/`, which
- * would have taken the green definition out of the repository — the failure
+ * would have taken the green definition out of the repository: the failure
  * D-13 exists to prevent. These tests are what stops that draft coming back.
  */
 
@@ -69,7 +69,7 @@ describe('applyTrackingPolicy', () => {
     expect(removed).toEqual([]);
   });
 
-  it('is idempotent — a second application adds nothing', () => {
+  it('is idempotent: a second application adds nothing', () => {
     const once = applyTrackingPolicy('node_modules/\n', false);
 
     expect(applyTrackingPolicy(once, false)).toBe(once);

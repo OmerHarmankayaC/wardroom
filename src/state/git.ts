@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 /**
  * The repository facts the resume procedure validates the marker against
  * (SDD §4.4 step 2 and step 3). Where marker and repository disagree, the
- * repository wins — it is the evidence, the marker is the record.
+ * repository wins: it is the evidence, the marker is the record.
  */
 
 export class NotARepositoryError extends Error {

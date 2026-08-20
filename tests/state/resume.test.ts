@@ -17,7 +17,7 @@ import { resume } from '../../src/state/resume.js';
  * repository files alone (FR-1.2): no orchestrator memory, no agent session.
  *
  * Scope boundary (BACKLOG D-21): step 2's cross-check against the open-tour
- * block in PROGRESS.md is NOT implemented here — it needs a grammar no
+ * block in PROGRESS.md is NOT implemented here: it needs a grammar no
  * document fixes yet (B-9). Every result says so rather than implying a
  * completeness it does not have (T-5).
  */

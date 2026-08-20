@@ -1,15 +1,15 @@
 # Wardroom
 
 Wardroom is an open-source, local-first orchestrator for disciplined AI
-development. It runs two Claude agent roles over your git repository — a
+development. It runs two Claude agent roles over your git repository: a
 Product Manager that owns scope and canonical documents, and an Implementer
-that writes code and tests — while you keep command: work proceeds
+that writes code and tests. You keep command, so work proceeds
 autonomously in bounded, test-gated iterations, and only critical actions
 (pushing, deploying, changing scope, destructive operations) stop and wait
 for your approval.
 
 The name: a wardroom is the room on a warship where the officers plan and
-report. The crew works there. The captain — you — keeps command.
+report. The crew works there. The captain, you, keeps command.
 
 ## Status
 
@@ -25,12 +25,12 @@ Heavyweight multi-agent frameworks bury project state in databases you
 can't read or fix. Wardroom takes a third path:
 
 - **All durable state lives in repository files.** Plain, versionable
-  markdown — no hidden databases, no session memory to lose. Kill the
+  markdown, with no hidden databases and no session memory to lose. Kill the
   process at any moment; it resumes from the repo.
 - **Documents before code.** Scope, requirements, and decisions are written
   and human-approved before implementation runs.
 - **Bounded iterations that must close green.** Full test suite, reversed
-  order, lint and types — or the iteration doesn't close.
+  order, lint and types, or the iteration doesn't close.
 - **Human command, not human babysitting.** You approve gates, not every
   step.
 
@@ -44,4 +44,4 @@ can't read or fix. Wardroom takes a third path:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

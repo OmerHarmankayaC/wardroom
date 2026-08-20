@@ -1,5 +1,5 @@
 // Child process for tests/state/kill.test.ts. Writes markers in a tight loop
-// until it is killed, using the shipped writeMarker — the point of the test is
+// until it is killed, using the shipped writeMarker. The point of the test is
 // that the real implementation survives a SIGKILL, so nothing here reimplements
 // it. Runs against dist/ so it needs no TypeScript loader on Node 18.
 import { ensureRunDir } from '../../dist/config/paths.js';

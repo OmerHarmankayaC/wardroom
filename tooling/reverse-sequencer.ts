@@ -11,7 +11,7 @@ import type { TestSpecification } from 'vitest/node';
  * both runs fix the order explicitly here (SDD §2, BACKLOG D-19).
  */
 
-/** Ascending comparison on the module path — the "file order" both runs mean. */
+/** Ascending comparison on the module path, the "file order" both runs mean. */
 function byModuleId(a: TestSpecification, b: TestSpecification): number {
   if (a.moduleId === b.moduleId) return 0;
   return a.moduleId < b.moduleId ? -1 : 1;

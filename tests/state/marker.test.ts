@@ -6,8 +6,8 @@ import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
 
 /**
- * The state marker (SDD §3.3). It is a hint, not evidence — §4.4 decides how
- * far it is trusted — but it has to be *readable* for that decision to have
+ * The state marker (SDD §3.3). It is a hint, not evidence, and §4.4 decides
+ * how far it is trusted. But it has to be *readable* for that decision to have
  * anything to work with, which is what BACKLOG D-20 is about.
  */
 

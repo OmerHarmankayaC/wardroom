@@ -1,8 +1,8 @@
 /**
  * The tracking policy (SRS §3.7, SDD §3.4, BACKLOG D-15).
  *
- * Two categories fail differently. The project contract — `.wardroom/config.json`
- * and the canonical documents — is what makes a repository a managed project;
+ * Two categories fail differently. The project contract (`.wardroom/config.json`
+ * and the canonical documents) is what makes a repository a managed project;
  * a clone that cannot state its own green definition can verify nothing, so it
  * is tracked always and by no setting excluded. Runtime records under
  * `.wardroom/run/` are tracked by default and may be excluded by an owner who

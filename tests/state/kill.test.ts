@@ -9,7 +9,7 @@ import { readMarker } from '../../src/state/marker.js';
 /**
  * BACKLOG D-20, the durability half. The marker is the file most likely to be
  * caught mid-write, because it is written at exactly the boundaries where the
- * process is doing something else dangerous — and it is the file resumption
+ * process is doing something else dangerous, and it is the file resumption
  * depends on. A real process, really killed, is the only evidence that the
  * atomic write holds.
  *
@@ -89,7 +89,7 @@ function isStopped(pid: number): boolean {
  * frozen picture: a temporary file present there means the process is between
  * writing it and renaming it over the marker. That is the instant the atomic
  * write exists for, and the only instant worth killing at. The writer is never
- * continued once that instant is found — SIGKILL reaps a stopped process, and
+ * continued once that instant is found. SIGKILL reaps a stopped process, and
  * resuming it first would let it finish the very rename being interrupted.
  */
 async function killInsideAWrite(writer: ChildProcess): Promise<void> {

@@ -10,7 +10,7 @@ import { type StateMarker, type TourState, readMarker, writeMarker } from './mar
  *
  * The next action is reconstructed from repository files alone (FR-1.2): no
  * orchestrator memory and no agent session is consulted. Process death is not
- * a state, so there is nothing to look up — only evidence to read.
+ * a state, so there is nothing to look up, only evidence to read.
  *
  * Scope boundary (BACKLOG D-21). Step 2's cross-check against the open-tour
  * block in PROGRESS.md is not implemented: it needs a grammar that no document

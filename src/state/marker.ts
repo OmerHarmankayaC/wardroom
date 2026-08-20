@@ -77,7 +77,7 @@ let writeCounter = 0;
  * Writes the marker atomically: serialize into a temporary file in the same
  * directory, then rename over the target. Rename within one directory is
  * atomic, so a process killed at any instant leaves either the previous marker
- * or the new one — never half of one (SDD §3.3, D-20).
+ * or the new one, never half of one (SDD §3.3, D-20).
  *
  * The temporary name is unique per write so two writers cannot land on each
  * other's partial file.

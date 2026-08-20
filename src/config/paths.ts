@@ -6,10 +6,10 @@ import { join } from 'node:path';
  * and different tracking rules: `config.json` is the project contract and is
  * always tracked; everything under `run/` is a runtime record and may be
  * excluded (BACKLOG D-15). The directory shape encodes that split so no file
- * is ever ambiguous — see ./tracking.ts.
+ * is ever ambiguous. See ./tracking.ts.
  */
 export interface WardroomPaths {
-  /** The project root — the git repository Wardroom manages. */
+  /** The project root: the git repository Wardroom manages. */
   readonly root: string;
   readonly wardroomDir: string;
   /** The project contract. Always tracked. */
