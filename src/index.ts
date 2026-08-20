@@ -28,7 +28,15 @@ export {
   applyTrackingPolicy,
   runtimeIgnoreEntries,
 } from './config/tracking.js';
-export { NotARepositoryError, headCommit, isWorkingTreeDirty } from './state/git.js';
+export {
+  NotARepositoryError,
+  currentBranch,
+  fileAtHead,
+  headCommit,
+  headSubject,
+  isPathTracked,
+  isWorkingTreeDirty,
+} from './state/git.js';
 export {
   TOUR_STATES,
   type MarkerRead,
@@ -83,3 +91,28 @@ export {
   park,
   show,
 } from './gates/queue.js';
+export {
+  COMMIT_OCCASIONS,
+  WIP_SUBJECT_PREFIX,
+  type CommitOccasion,
+  type CommitRequest,
+  type CommitVerdict,
+  type JobBoundaryOccasion,
+  type OtherOccasion,
+  type WipStopOccasion,
+  checkCommit,
+} from './commit/gate.js';
+export {
+  type BaselineRecord,
+  type DocBaseline,
+  buildDocBaseline,
+  readDocBaseline,
+  recordClosureBaseline,
+  writeDocBaseline,
+} from './documents/baseline.js';
+export {
+  canonicalDocuments,
+  documentHash,
+  documentVersion,
+  hasChangeLogRow,
+} from './documents/set.js';

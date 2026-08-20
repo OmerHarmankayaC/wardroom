@@ -26,9 +26,20 @@ describe('wardroomPaths', () => {
       configFile: join(root, '.wardroom', 'config.json'),
       runDir: join(root, '.wardroom', 'run'),
       stateFile: join(root, '.wardroom', 'run', 'state.json'),
+      // Added by SDD 1.4 §3.0 (BACKLOG D-30): the closure baseline FR-6.1
+      // compares against where the document root is untracked. It is a
+      // derived record, rebuildable at any closed boundary, which is why it
+      // sits under run/ rather than beside config.json.
+      docBaselineFile: join(root, '.wardroom', 'run', 'doc-baseline.json'),
       gatesDir: join(root, '.wardroom', 'run', 'gates'),
       auditLog: join(root, '.wardroom', 'run', 'gates', 'audit.jsonl'),
     });
+  });
+
+  it('keeps the closure baseline among the runtime records', () => {
+    const paths = wardroomPaths(root);
+
+    expect(paths.docBaselineFile.startsWith(paths.runDir)).toBe(true);
   });
 
   it('keeps the configuration file outside the runtime directory', () => {

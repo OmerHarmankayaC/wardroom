@@ -53,3 +53,49 @@ export function isWorkingTreeDirty(root: string): boolean {
   const changes = git(root, ['status', '--porcelain', '--', ':(exclude).wardroom/run']);
   return changes.trim() !== '';
 }
+
+/**
+ * Whether git tracks anything at this path. A directory answers for its
+ * contents, which is how the commit gate learns whether the document root is
+ * tracked and therefore whether git can supply a baseline at all
+ * (SDD §4.5, BACKLOG D-30).
+ */
+export function isPathTracked(root: string, path: string): boolean {
+  assertRepository(root);
+  try {
+    return git(root, ['ls-files', '--', path]).trim() !== '';
+  } catch {
+    return false;
+  }
+}
+
+/** The file as committed at HEAD, or null where HEAD does not carry it. */
+export function fileAtHead(root: string, path: string): string | null {
+  assertRepository(root);
+  try {
+    return git(root, ['show', `HEAD:${path}`]);
+  } catch {
+    return null;
+  }
+}
+
+/** The current branch name, or null on a detached HEAD. */
+export function currentBranch(root: string): string | null {
+  assertRepository(root);
+  try {
+    const name = git(root, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    return name === 'HEAD' ? null : name;
+  } catch {
+    return null;
+  }
+}
+
+/** The subject line of the commit at HEAD, or null in a repository with none. */
+export function headSubject(root: string): string | null {
+  assertRepository(root);
+  try {
+    return git(root, ['log', '-1', '--format=%s']).trim();
+  } catch {
+    return null;
+  }
+}

@@ -17,6 +17,8 @@ export interface WardroomPaths {
   /** Runtime records. Tracked unless `track_runtime` is false. */
   readonly runDir: string;
   readonly stateFile: string;
+  /** Per canonical document, its version and content hash at the last tour close. */
+  readonly docBaselineFile: string;
   readonly gatesDir: string;
   readonly auditLog: string;
 }
@@ -32,6 +34,7 @@ export function wardroomPaths(root: string): WardroomPaths {
     configFile: join(wardroomDir, 'config.json'),
     runDir,
     stateFile: join(runDir, 'state.json'),
+    docBaselineFile: join(runDir, 'doc-baseline.json'),
     gatesDir,
     auditLog: join(gatesDir, 'audit.jsonl'),
   };
