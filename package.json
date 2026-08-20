@@ -1,0 +1,40 @@
+{
+  "name": "wardroom",
+  "version": "0.0.1",
+  "description": "Local-first orchestrator for a document-driven development protocol with Claude agent roles over a git repository.",
+  "license": "MIT",
+  "author": "Omer Harmankaya",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OmerHarmankayaC/wardroom.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:reverse": "vitest run --config vitest.reverse.config.ts",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
+  }
+}

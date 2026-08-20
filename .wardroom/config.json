@@ -1,0 +1,23 @@
+{
+  "name": "wardroom",
+  "level": "full",
+  "doc_root": "internal/docs",
+  "stack": {
+    "language": "TypeScript",
+    "runtime": "node>=18",
+    "package_manager": "npm"
+  },
+  "verify": [
+    "npm run test",
+    "npm run test:reverse",
+    "npm run lint",
+    "npm run typecheck"
+  ],
+  "auth_mode": "api_key",
+  "gate_wait": "24h",
+  "attempt_budget": 3,
+  "usage_budget": {
+    "usd": 20
+  },
+  "track_runtime": false
+}
