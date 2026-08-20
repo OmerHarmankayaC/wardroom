@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import type { ProjectConfig } from '../config/schema.js';
 import { type BaselineRecord, readDocBaseline } from '../documents/baseline.js';
 import {
-  canonicalDocuments,
   documentHash,
   documentVersion,
   hasChangeLogRow,
+  versionCarryingDocuments,
 } from '../documents/set.js';
 import { fileAtHead, headSubject, isPathTracked } from '../state/git.js';
 
@@ -115,7 +115,7 @@ function checkOccasion(root: string, occasion: CommitOccasion, blocks: string[])
       blocks.push('occasion: a WIP stop states why the tour is stopping with work unfinished.');
     }
     const subject = headSubject(root);
-    if (subject !== null && subject.startsWith(WIP_SUBJECT_PREFIX)) {
+    if (subject?.startsWith(WIP_SUBJECT_PREFIX)) {
       // FR-7.1 permits ONE WIP commit. A second turns the escape hatch into
       // the periodic checkpoint commit the rule exists to forbid.
       blocks.push(
@@ -154,7 +154,12 @@ function checkDocuments(
   blocks: string[],
 ): CommitVerdict['baselineSource'] {
   const staged = new Set(stagedPaths);
-  const documents = canonicalDocuments(config.level)
+  // The set comes from the project's level (SRS §3.2, BACKLOG D-31), never
+  // from whether a staged file happens to hold a version block. PROGRESS and
+  // the tour logs are canonical and are simply not in it: they carry no
+  // version, so the rule could never be satisfied and every commit touching
+  // them would block, permanently.
+  const documents = versionCarryingDocuments(config.level)
     .map((name) => ({ name, path: join(config.docRoot, name) }))
     .filter((document) => staged.has(document.path));
 
@@ -182,12 +187,13 @@ function checkDocuments(
 
     const version = documentVersion(contents);
     if (version === null) {
-      // PROGRESS.md at every level. It is the state carrier, rewritten at
-      // every job boundary, and carries neither a version nor a change log by
-      // design (SRS §3.2, §3.5). An absent version can never differ from an
-      // absent version, so applying the rule here would block every commit
-      // that touches it, forever. Recorded as a document debt: FR-6.1 does not
-      // say which canonical documents carry versions.
+      // A document the level puts in the version-carrying set, whose version
+      // block is gone. Blocked, not exempted: an enforcement that a document
+      // can switch off by deleting the thing being checked is not an
+      // enforcement (D-31).
+      blocks.push(
+        `${name}: content changed and the document carries no version block. It is version-carrying at the ${config.level} level (SRS §3.2), and the set is read from the level, not from the file.`,
+      );
       continue;
     }
 

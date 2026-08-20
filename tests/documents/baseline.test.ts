@@ -11,7 +11,11 @@ import {
   recordClosureBaseline,
   writeDocBaseline,
 } from '../../src/documents/baseline.js';
-import { documentHash } from '../../src/documents/set.js';
+import {
+  canonicalDocuments,
+  documentHash,
+  versionCarryingDocuments,
+} from '../../src/documents/set.js';
 
 /**
  * The closure baseline (SRS §3.3, BACKLOG D-30). It exists because a project
@@ -83,12 +87,27 @@ describe('buildDocBaseline', () => {
     expect(baseline['SDD.md']?.version).toBe('1.4');
   });
 
-  it('records a null version for a document that carries none', () => {
+  it('leaves PROGRESS out of the record entirely (BACKLOG D-31)', () => {
     writeDocument('PROGRESS.md', '# PROGRESS\n\n## Repo\n');
+    writeDocument('SRS.md', versioned('SRS', '1.3'));
 
-    expect(buildDocBaseline(root, config)['PROGRESS.md']).toEqual({
+    const baseline = buildDocBaseline(root, config);
+
+    // The record covers the version-carrying set and nothing else. Hashing
+    // PROGRESS would record a baseline for a document FR-6.1's version rule
+    // cannot reach, which is a fact stored for no reader.
+    expect(baseline['PROGRESS.md']).toBeUndefined();
+    expect(Object.keys(baseline)).toEqual(['SRS.md']);
+  });
+
+  it('records a null version for a version-carrying document that lost its block', () => {
+    // Not an exemption. The record says the document carried no version at the
+    // last close, and the commit gate blocks the next content change on it.
+    writeDocument('SDD.md', '# SDD\n\n## 1. Architecture\n');
+
+    expect(buildDocBaseline(root, config)['SDD.md']).toEqual({
       version: null,
-      hash: documentHash('# PROGRESS\n\n## Repo\n'),
+      hash: documentHash('# SDD\n\n## 1. Architecture\n'),
     });
   });
 
@@ -107,6 +126,16 @@ describe('buildDocBaseline', () => {
     writeDocument('NOTES.md', versioned('NOTES', '1.0'));
 
     expect(Object.keys(buildDocBaseline(root, config))).toEqual(['SRS.md']);
+  });
+
+  it('holds exactly the version-carrying set when every document is present', () => {
+    for (const name of canonicalDocuments(config.level)) {
+      writeDocument(name, versioned(name, '1.0'));
+    }
+
+    expect(Object.keys(buildDocBaseline(root, config)).sort()).toEqual(
+      [...versionCarryingDocuments(config.level)].sort(),
+    );
   });
 });
 

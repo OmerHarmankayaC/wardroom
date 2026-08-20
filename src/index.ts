@@ -116,5 +116,6 @@ export {
   documentHash,
   documentVersion,
   hasChangeLogRow,
+  versionCarryingDocuments,
 } from './documents/set.js';
 export { isFilledString, isJsonObject } from './json/guards.js';

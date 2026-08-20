@@ -274,7 +274,7 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
     expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'no-baseline' });
   });
 
-  it('does not apply the version rule to a document that carries no version', () => {
+  it('leaves PROGRESS outside the rule, because the level says so', () => {
     const config = configFor(UNTRACKED_DOCS);
     write(join(UNTRACKED_DOCS, 'PROGRESS.md'), '# PROGRESS\n\n## Repo\n');
     write('.gitignore', '/internal/\n');
@@ -288,10 +288,48 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
       occasion: boundary,
     });
 
-    // PROGRESS.md is canonical at every level and has neither a version nor a
-    // change log by design. An absent version can never differ from an absent
-    // version, so the rule would block every commit touching it, forever.
-    expect(verdict.allowed).toBe(true);
+    // PROGRESS is canonical at every level and carries neither a version nor a
+    // change log by design (SRS §3.2, D-31). It is not a document the check
+    // looked at and cleared: it is not in the set the check reads at all.
+    expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'none' });
+  });
+
+  it('still leaves PROGRESS outside the rule when a version block appears in it', () => {
+    // The mutation check. A set inferred from the file would pull PROGRESS in
+    // here and block a commit that touches the state carrier, which is exactly
+    // the failure D-31 names: a rule whose reach is read out of the file being
+    // checked.
+    const config = configFor(UNTRACKED_DOCS);
+    write(join(UNTRACKED_DOCS, 'PROGRESS.md'), srs('1.3'));
+    write('.gitignore', '/internal/\n');
+    git('add', '.gitignore');
+    git('commit', '-q', '-m', 'ignore the document root');
+    recordClosureBaseline(root, config);
+    write(join(UNTRACKED_DOCS, 'PROGRESS.md'), srs('1.3', '## edited without a bump'));
+
+    expect(
+      checkCommit(root, config, {
+        stagedPaths: [join(UNTRACKED_DOCS, 'PROGRESS.md')],
+        occasion: boundary,
+      }),
+    ).toEqual({ allowed: true, blocks: [], baselineSource: 'none' });
+  });
+
+  it('blocks a version-carrying document whose version block was deleted', () => {
+    // The other half of the mutation check. Under the inference this replaces,
+    // deleting the block exempted the document, so the enforcement could be
+    // switched off by editing the thing it enforces.
+    const config = withUntrackedDocuments('1.3');
+    write(join(UNTRACKED_DOCS, 'SRS.md'), '# Software Requirements Specification\n\n## 1.\n');
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: stagedSrs(UNTRACKED_DOCS),
+      occasion: boundary,
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks[0]).toContain('SRS.md');
+    expect(verdict.blocks[0]).toContain('no version block');
   });
 });
 

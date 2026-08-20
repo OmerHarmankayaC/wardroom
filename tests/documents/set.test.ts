@@ -4,6 +4,7 @@ import {
   documentHash,
   documentVersion,
   hasChangeLogRow,
+  versionCarryingDocuments,
 } from '../../src/documents/set.js';
 
 /**
@@ -120,5 +121,50 @@ describe('documentHash', () => {
 
     expect(documentVersion(edited)).toBe(documentVersion(document));
     expect(documentHash(edited)).not.toBe(documentHash(document));
+  });
+});
+
+describe('versionCarryingDocuments (BACKLOG D-31)', () => {
+  it('is the specification class, and PROGRESS is not in it', () => {
+    expect(versionCarryingDocuments('full')).toEqual([
+      'CHARTER.md',
+      'BACKLOG.md',
+      'SRS.md',
+      'SDD.md',
+    ]);
+  });
+
+  it('is the decision log at the light level, where there is no charter', () => {
+    expect(versionCarryingDocuments('light')).toEqual(['DECISIONS.md']);
+  });
+
+  it('is the charter and the backlog at the standard level', () => {
+    expect(versionCarryingDocuments('standard')).toEqual(['CHARTER.md', 'BACKLOG.md']);
+  });
+
+  it('never carries PROGRESS.md, at any level', () => {
+    // FR-6.1 read literally blocks every commit that touches PROGRESS: a
+    // document with no version cannot have one that differs from its
+    // baseline, so the condition can never be satisfied (D-31).
+    for (const level of ['light', 'standard', 'full'] as const) {
+      expect(versionCarryingDocuments(level)).not.toContain('PROGRESS.md');
+    }
+  });
+
+  it('is a subset of the level canonical set, so the two cannot drift', () => {
+    for (const level of ['light', 'standard', 'full'] as const) {
+      const canonical = canonicalDocuments(level);
+      for (const name of versionCarryingDocuments(level)) {
+        expect(canonical).toContain(name);
+      }
+    }
+  });
+
+  it('is read from the level, never from the contents of a document', () => {
+    // The mutation this test exists for: inferring the set from whether a
+    // version block is present makes the rule switchable by editing the file
+    // it governs, so deleting the block from SRS.md would exempt SRS.md.
+    expect(versionCarryingDocuments('full')).toContain('SRS.md');
+    expect(versionCarryingDocuments('full').length).toBeLessThan(canonicalDocuments('full').length);
   });
 });

@@ -4,12 +4,12 @@ import { wardroomPaths } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { atomicWriteFile } from '../fs/atomic.js';
 import { isPathTracked } from '../state/git.js';
-import { canonicalDocuments, documentHash, documentVersion } from './set.js';
+import { documentHash, documentVersion, versionCarryingDocuments } from './set.js';
 
 /**
  * The document baseline written at tour closure (SRS §3.3, SDD §3.0,
- * BACKLOG D-30): per canonical document, its version and a hash of its
- * content.
+ * BACKLOG D-30): per version-carrying canonical document (SRS §3.2, D-31),
+ * its version and a hash of its content.
  *
  * It exists for one case. Where the document root is untracked (D-8, and this
  * repository is that case) git has no copy to compare against, and FR-6.1 as
@@ -28,18 +28,28 @@ import { canonicalDocuments, documentHash, documentVersion } from './set.js';
  */
 
 export interface BaselineRecord {
-  /** Null for a canonical document that carries no version block. */
+  /**
+   * Null where the document carried no version block at the last close. The
+   * record says so rather than omitting the document, because a
+   * version-carrying document without a version is a defect the commit gate
+   * must be able to see, not one it should read as an exemption.
+   */
   readonly version: string | null;
   readonly hash: string;
 }
 
 export type DocBaseline = Readonly<Record<string, BaselineRecord>>;
 
-/** Reads the canonical documents that are present and records what they say now. */
+/**
+ * Reads the version-carrying documents that are present and records what they
+ * say now. PROGRESS and the tour logs are canonical and are not in the record:
+ * FR-6.1's version rule cannot reach them, so a baseline for them would be a
+ * fact stored for no reader (D-31).
+ */
 export function buildDocBaseline(root: string, config: ProjectConfig): DocBaseline {
   const baseline: Record<string, BaselineRecord> = {};
 
-  for (const name of canonicalDocuments(config.level)) {
+  for (const name of versionCarryingDocuments(config.level)) {
     let contents: string;
     try {
       contents = readFileSync(join(root, config.docRoot, name), 'utf8');
