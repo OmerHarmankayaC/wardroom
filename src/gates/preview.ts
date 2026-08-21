@@ -121,8 +121,12 @@ function checkSecrets(preview: Record<string, unknown>, problems: string[]): voi
 }
 
 function checkTourBudget(preview: Record<string, unknown>, problems: string[]): void {
-  if (!Number.isInteger(preview.attemptCount) || (preview.attemptCount as number) < 1) {
-    problems.push('preview.attemptCount: must be the number of attempts made, at least one.');
+  // Zero is a real answer here, not a missing one (D-71). A missing green
+  // definition cannot change by being run again, so the gate is raised with no
+  // attempt spent at all, and refusing zero would make the one failure that
+  // must reach the owner immediately the one that cannot be presented.
+  if (!Number.isInteger(preview.attemptCount) || (preview.attemptCount as number) < 0) {
+    problems.push('preview.attemptCount: must be the number of attempts made, zero or more.');
   }
   checkText(preview, 'lastFailureOutput', problems);
 }

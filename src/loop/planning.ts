@@ -1,5 +1,5 @@
 import type { ProjectConfig } from '../config/schema.js';
-import { enqueue } from '../gates/queue.js';
+import { raiseTourBudgetGate } from '../gates/tour-budget.js';
 import { type OpenTourBlock, readOpenTour } from '../progress/open-tour.js';
 import {
   type LastFailure,
@@ -137,54 +137,19 @@ export async function drivePlanning(input: DrivePlanningInput): Promise<Planning
     }
 
     if (marker.attemptCount >= input.config.attemptBudget) {
-      return raiseTourBudget(input, marker, now);
+      const failure = readLastFailure(input.root);
+      const raised = raiseTourBudgetGate({
+        root: input.root,
+        config: input.config,
+        marker,
+        reason: 'budget-spent',
+        evidence: failureEvidence(failure),
+        now: now(),
+      });
+      return { kind: 'gated', marker: raised.marker, gateId: raised.gateId, failure };
     }
 
     await input.session.plan();
     attemptsSpent += 1;
   }
-}
-
-/**
- * FR-1.3's gate, with the evidence §3.1 requires and no tour to name.
- *
- * `tour_id` is null rather than empty: planning is what creates the record and
- * it never got that far, so nothing is being withheld (D-45, D-59, D-70).
- */
-function raiseTourBudget(
-  input: DrivePlanningInput,
-  marker: StateMarker,
-  now: () => Date,
-): PlanningResult {
-  const failure = readLastFailure(input.root);
-  const entry = enqueue(
-    input.root,
-    {
-      gateClass: 'tour-budget',
-      tourId: null,
-      jobIndex: null,
-      interruptedState: 'PLANNING',
-      what: `Keep trying to plan after ${marker.attemptCount} failed attempts, or stop`,
-      why: 'FR-1.3: the attempt budget is spent, and an unparseable plan retried without a bound is the shape that requirement exists to forbid (D-50)',
-      preview: {
-        kind: 'tour-budget',
-        attemptCount: marker.attemptCount,
-        lastFailureOutput: failureEvidence(failure),
-      },
-    },
-    { now: now() },
-  );
-
-  return {
-    kind: 'gated',
-    marker: advance(
-      input.root,
-      marker,
-      { type: 'raise-gate', gateClass: 'tour-budget', gateId: entry.gateId },
-      { attemptBudget: input.config.attemptBudget },
-      now(),
-    ).marker,
-    gateId: entry.gateId,
-    failure,
-  };
 }

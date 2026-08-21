@@ -144,13 +144,26 @@ describe('previewProblem', () => {
     );
   });
 
-  it('refuses a tour-budget preview reporting no attempt', () => {
+  it('accepts a tour-budget preview reporting no attempt at all (D-71)', () => {
+    // Zero is a real answer, not a missing one. A missing green definition
+    // cannot change by being run again, so that gate is raised with no attempt
+    // spent, and refusing zero would make the one failure that must reach the
+    // owner immediately the one that cannot be presented (FR-1.5, §4.3).
     const problem = previewProblem('tour-budget', {
       ...presentable['tour-budget'],
       attemptCount: 0,
     });
 
-    expect(problem).toContain('preview.attemptCount');
+    expect(problem).toBeNull();
+  });
+
+  it('still refuses an attempt count that is not a count', () => {
+    expect(
+      previewProblem('tour-budget', { ...presentable['tour-budget'], attemptCount: -1 }),
+    ).toContain('preview.attemptCount');
+    expect(
+      previewProblem('tour-budget', { ...presentable['tour-budget'], attemptCount: 1.5 }),
+    ).toContain('preview.attemptCount');
   });
 
   it('refuses a dirty-tree preview with no changes, because that tree is clean (D-32)', () => {

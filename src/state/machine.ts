@@ -63,6 +63,16 @@ export type TourEvent =
   /** FAILED to EXECUTING while attempt_count is under the budget (FR-1.3). */
   | { readonly type: 'retry' }
   /**
+   * FAILED back to VERIFYING, where no failure record survives (§4.4 step 4).
+   *
+   * The §3.2 table gives FAILED one success route, the retry into EXECUTING.
+   * §4.4 gives it a second: with the record absent there is nothing to say
+   * which side of the budget the tour was on, so it is verified again rather
+   * than guessed at. That is not a retry of the work, it is a re-reading of
+   * the evidence, and it spends no attempt.
+   */
+  | { readonly type: 'reverify' }
+  /**
    * Into GATED, remembering the interrupted state and the entry it waits on.
    *
    * `gateId` is required: the marker names the gate (§3.3, D-62), and a
@@ -75,6 +85,18 @@ export type TourEvent =
       readonly type: 'raise-gate';
       readonly gateClass: GateClass;
       readonly gateId: string;
+      /**
+       * For `tour-budget` only: the failure cannot change by being retried, so
+       * the budget need not be spent first (D-71).
+       *
+       * The gate normally replaces an indefinite retry and exists only where
+       * the budget is actually spent. A missing green definition is the case
+       * that breaks the pattern: a command may pass on the next attempt, while
+       * an absent definition cannot change by being run again, so spending the
+       * budget one attempt at a time would burn it on a question only the
+       * owner can answer (FR-1.5, §4.3).
+       */
+      readonly unretryable?: boolean;
     }
   /** GATED to PARKED: the waiting period elapsed (FR-3.3). */
   | { readonly type: 'park' }
@@ -98,6 +120,14 @@ export type TourEventType = TourEvent['type'];
  * raise the gate replacing an indefinite retry (§3.2, FR-1.3, D-50, D-60).
  */
 const BUDGET_SPENDING_STATES: readonly TourState[] = ['PLANNING', 'FAILED'];
+
+/**
+ * The states that may raise the tour-budget gate.
+ *
+ * The two that spend the budget, plus `VERIFYING`, which raises it without
+ * spending anything where the failure is one no retry can change (D-71).
+ */
+const TOUR_BUDGET_STATES: readonly TourState[] = [...BUDGET_SPENDING_STATES, 'VERIFYING'];
 
 /** The facts the guards need. The attempt budget lives in the contract (SRS §3.1). */
 export interface TransitionRules {
@@ -124,13 +154,13 @@ const ACCEPTS: Record<TourState, readonly TourEventType[]> = {
   IDLE: ['open', 'raise-gate'],
   PLANNING: ['plan-complete', 'plan-failed', 'raise-gate'],
   EXECUTING: ['job-boundary', 'jobs-done', 'raise-gate'],
-  VERIFYING: ['green', 'verification-failed'],
+  VERIFYING: ['green', 'verification-failed', 'raise-gate'],
   CLOSING: ['close', 'raise-gate'],
   // A decision or a park and nothing else: the orchestrator blocks on the
   // gate it raised, so nothing exists to raise a second one (§3.2, D-14).
   GATED: ['decide', 'park'],
   PARKED: ['decide'],
-  FAILED: ['retry', 'raise-gate'],
+  FAILED: ['retry', 'reverify', 'raise-gate'],
 };
 
 export class IllegalTransitionError extends Error {
@@ -223,22 +253,26 @@ function raiseGate(
     // one counter covers planning and verification together (D-50, D-60), and
     // restricting the gate to FAILED left an unparseable plan with nowhere to
     // go but around again forever.
-    if (!BUDGET_SPENDING_STATES.includes(from)) {
+    if (!TOUR_BUDGET_STATES.includes(from)) {
       throw new IllegalTransitionError(
         from,
         'raise-gate',
-        `tour-budget is raised at ${BUDGET_SPENDING_STATES.join(' and ')} only, which are the states that spend the budget`,
+        `tour-budget is raised at ${TOUR_BUDGET_STATES.join(', ')} only`,
       );
     }
-    if (marker.attemptCount < rules.attemptBudget) {
+    if (event.unretryable !== true && marker.attemptCount < rules.attemptBudget) {
       throw new IllegalTransitionError(
         from,
         'raise-gate',
         `the attempt budget still holds (${marker.attemptCount} of ${rules.attemptBudget} spent)`,
       );
     }
-  } else if (from === 'FAILED') {
-    throw new IllegalTransitionError(from, 'raise-gate', 'FAILED raises only the tour-budget gate');
+  } else if (from === 'FAILED' || from === 'VERIFYING') {
+    throw new IllegalTransitionError(
+      from,
+      'raise-gate',
+      `${from} raises only the tour-budget gate`,
+    );
   }
 
   return stamped(marker, now, { state: 'GATED', interruptedState: from, gateId: event.gateId });
@@ -390,6 +424,8 @@ export function transition(
       }
       return move({ state: 'EXECUTING' });
     }
+    case 'reverify':
+      return move({ state: 'VERIFYING' });
     case 'raise-gate':
       return {
         marker: withGateRule(raiseGate(marker, event, rules, now)),

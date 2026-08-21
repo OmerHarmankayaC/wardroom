@@ -244,3 +244,17 @@ export {
   type PmSession,
   drivePlanning,
 } from './loop/planning.js';
+export {
+  type TourBudgetGateInput,
+  type TourBudgetGateRaised,
+  type TourBudgetReason,
+  raiseTourBudgetGate,
+} from './gates/tour-budget.js';
+export {
+  type DriveFailedInput,
+  type DriveVerifyingInput,
+  type FailedResult,
+  type VerifyingResult,
+  driveFailed,
+  driveVerifying,
+} from './loop/verifying.js';
