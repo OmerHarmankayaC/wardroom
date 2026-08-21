@@ -11,8 +11,9 @@ import { type ToolCallClassification, classifyToolCall, isCommitCall } from '../
 import { type Notifier, deliver, parkedNotification } from '../gates/notify.js';
 import { authorizationFor, consume, enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
-import { headCommit, stagedPaths } from '../state/git.js';
-import { type StateMarker, type TourState, writeMarker } from '../state/marker.js';
+import { stagedPaths } from '../state/git.js';
+import { advance } from '../state/machine.js';
+import type { StateMarker, TourState } from '../state/marker.js';
 import type { VerifyRunner } from '../verify/run.js';
 
 /**
@@ -37,10 +38,16 @@ export interface GateInterceptorInput {
   /** The repository Wardroom manages. */
   readonly root: string;
   readonly config: ProjectConfig;
-  readonly tourId: string;
-  readonly jobIndex: number | null;
-  /** The state the tour returns to once the gate is decided (SDD §3.2). */
-  readonly interruptedState: TourState;
+  /**
+   * The marker as the orchestrator currently holds it.
+   *
+   * One input rather than four, because `tour_id`, `job_index`, the state a
+   * gate would interrupt and `attempt_count` are all already in it, and a
+   * second copy of them beside it is a second copy to get out of step. Every
+   * marker this module writes goes through the machine from here, so no shape
+   * reaches disk that the §3.2 table did not produce (D-47, D-62).
+   */
+  readonly marker: () => StateMarker;
   /**
    * Builds the class-mandated preview from what the call said.
    *
@@ -67,8 +74,6 @@ export interface GateInterceptorInput {
    * runs the project's commands for real.
    */
   readonly runVerification?: VerifyRunner;
-  /** Failed verification attempts so far, carried into the marker (FR-1.3). */
-  readonly attemptCount?: number;
   /** Where the FR-3.3 notification goes. Absent is a surface that cannot be reached. */
   readonly notify?: Notifier;
   readonly pollIntervalMs?: number;
@@ -244,7 +249,7 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
    * `PARKED` next time. The notification is last and is allowed to fail: it is
    * the one step that changes nothing on disk.
    */
-  function parkTour(gateId: string): SyncHookJSONOutput {
+  function parkTour(gateId: string, gated: StateMarker): SyncHookJSONOutput {
     const parked = park(input.root, gateId, { now: now() });
 
     // The outcome is set here, before the two steps that can still fail. The
@@ -253,26 +258,18 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     outcome = {
       kind: 'parked',
       gateId,
-      interruptedState: input.interruptedState,
+      interruptedState: gated.interruptedState ?? gated.state,
       parkedAt: parked.parkedAt ?? now().toISOString(),
       notified: false,
     };
 
     ensureRunDir(input.root);
-    const marker: StateMarker = {
-      state: 'PARKED',
-      tourId: input.tourId,
-      jobIndex: input.jobIndex,
-      interruptedState: input.interruptedState,
-      attemptCount: input.attemptCount ?? 0,
-      // The marker names the gate it waits on (§3.3, D-62); parking decides
-      // nothing, so the identifier travels with the state rather than being
-      // cleared by it.
-      gateId,
-      headCommit: headCommit(input.root),
-      updatedAt: now().toISOString(),
-    };
-    writeMarker(input.root, marker);
+    // Through the machine, not built by hand. A literal here would write a
+    // shape the transition table never produced, and nothing would check it:
+    // parking from a state that had never gated would go to disk without
+    // complaint. Parking decides nothing, so the gate identifier travels with
+    // the state rather than being cleared by it (§3.2, D-62).
+    transitionTo(gated, { type: 'park' });
 
     const notified = deliver(
       input.notify,
@@ -328,6 +325,12 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     }
   }
 
+  /** Applies one transition and writes the marker once (§3.2, D-47). */
+  function transitionTo(from: StateMarker, event: Parameters<typeof advance>[2]): StateMarker {
+    return advance(input.root, from, event, { attemptBudget: input.config.attemptBudget }, now())
+      .marker;
+  }
+
   const hook: HookCallback = async (hookInput) => {
     if (hookInput.hook_event_name !== 'PreToolUse') return UNTOUCHED;
     const call = hookInput as PreToolUseHookInput;
@@ -345,10 +348,11 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     // park, so the approved action is taken by a later session; without this,
     // that session's identical call raises the same gate a second time, which
     // §4.4 forbids, and the owner is asked a question they already answered.
+    const current = input.marker();
     const standing = authorizationFor(input.root, {
       gateClass: classification.gateClass,
       what: classification.what,
-      tourId: input.tourId,
+      tourId: current.tourId ?? '',
     });
     if (standing !== null) {
       consume(input.root, standing.gateId, classification.what, { now: now() });
@@ -367,9 +371,9 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
         input.root,
         {
           gateClass: classification.gateClass,
-          tourId: input.tourId,
-          jobIndex: input.jobIndex,
-          interruptedState: input.interruptedState,
+          tourId: current.tourId ?? '',
+          jobIndex: current.jobIndex,
+          interruptedState: current.state,
           what: classification.what,
           why: classification.why,
           preview: input.buildPreview(classification),
@@ -381,8 +385,18 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     }
 
     try {
+      // The marker follows the gate. Without this a death while the gate was
+      // pending left the marker reading EXECUTING, and resumption walked
+      // straight past a decision the owner had not made, which SDD §4.4's D-24
+      // note calls the one failure the gate queue exists to prevent.
+      const gated = transitionTo(current, {
+        type: 'raise-gate',
+        gateClass: classification.gateClass,
+        gateId: entry.gateId,
+      });
+
       const waited = await waitForDecision(entry.gateId);
-      if (!('decided' in waited)) return parkTour(entry.gateId);
+      if (!('decided' in waited)) return parkTour(entry.gateId, gated);
 
       // The call that raised the gate is the call the approval authorizes, so
       // it spends it here rather than leaving it standing for the next one. An
@@ -391,6 +405,13 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
       if (waited.decided.status === 'approved') {
         consume(input.root, waited.decided.gateId, classification.what, { now: now() });
       }
+      // Either answer returns the tour to the state the gate interrupted; a
+      // rejection is recorded as a new job by the loop, not here (§3.2).
+      transitionTo(gated, {
+        type: 'decide',
+        gateClass: classification.gateClass,
+        approved: waited.decided.status === 'approved',
+      });
       return decisionOutcome(waited.decided);
     } catch (error) {
       return refusal(classification, error);

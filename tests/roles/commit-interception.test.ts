@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import type { PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CommitOccasion, JobBoundaryOccasion } from '../../src/commit/gate.js';
-import { wardroomPaths } from '../../src/config/paths.js';
+import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
 import { readAuditLines } from '../../src/gates/audit.js';
 import { isCommitCall } from '../../src/gates/classify.js';
@@ -13,6 +13,7 @@ import { list } from '../../src/gates/queue.js';
 import type { GatePreview } from '../../src/gates/schema.js';
 import { createGateInterceptor } from '../../src/roles/intercept.js';
 import { stagedPaths } from '../../src/state/git.js';
+import { type StateMarker, writeMarker } from '../../src/state/marker.js';
 import type { VerifyRunner } from '../../src/verify/run.js';
 
 /**
@@ -65,11 +66,25 @@ beforeEach(() => {
   write('README.md', '# fixture\n');
   git('add', '-A');
   git('commit', '-qm', 'fixture');
+  ensureRunDir(root);
+  writeMarker(root, EXECUTING_MARKER);
 });
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
+
+/** The marker the orchestrator holds while the session works. */
+const EXECUTING_MARKER: StateMarker = {
+  state: 'EXECUTING',
+  tourId: 'tour-3-b-ii',
+  jobIndex: 3,
+  interruptedState: null,
+  attemptCount: 0,
+  gateId: null,
+  headCommit: null,
+  updatedAt: '2026-08-21T08:00:00.000Z',
+};
 
 const boundary: JobBoundaryOccasion = {
   kind: 'job-boundary',
@@ -90,9 +105,7 @@ function interceptor(occasion: CommitOccasion = boundary, runVerification: Verif
   return createGateInterceptor({
     root,
     config,
-    tourId: 'tour-3-b-ii',
-    jobIndex: 3,
-    interruptedState: 'EXECUTING',
+    marker: () => EXECUTING_MARKER,
     buildPreview,
     commitOccasion: () => occasion,
     runVerification,
@@ -365,9 +378,7 @@ describe('an ordinary shell call is untouched', () => {
     const { hook } = createGateInterceptor({
       root,
       config,
-      tourId: 'tour-3-b-ii',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
+      marker: () => EXECUTING_MARKER,
       buildPreview: () => ({
         kind: 'push',
         commits: [{ hash: 'abc1234', subject: 'feat: one' }],

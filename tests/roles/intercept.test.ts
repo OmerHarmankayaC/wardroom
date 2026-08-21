@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { wardroomPaths } from '../../src/config/paths.js';
+import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
 import { readAuditLines } from '../../src/gates/audit.js';
 import type { ToolCallClassification } from '../../src/gates/classify.js';
@@ -17,7 +17,7 @@ import {
   isErrorOutcome,
   parkingDeadline,
 } from '../../src/roles/intercept.js';
-import { readMarker } from '../../src/state/marker.js';
+import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
 
 /**
  * Gate interception as a `PreToolUse` hook (SDD §4.2, §3.1, D-43).
@@ -51,6 +51,9 @@ beforeEach(() => {
   // A real repository, because parking writes the marker and the marker
   // carries the HEAD commit it was written at (SDD §3.3).
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  currentMarker = EXECUTING_MARKER;
+  ensureRunDir(root);
+  writeMarker(root, currentMarker);
 });
 
 afterEach(() => {
@@ -81,7 +84,6 @@ interface Fixture {
   readonly pollIntervalMs?: number;
   /** Milliseconds the clock advances per sleep; the poll interval by default. */
   readonly tickMs?: number;
-  readonly attemptCount?: number;
   readonly notify?: (notification: ParkedNotification) => void;
   readonly buildPreview?: (classification: ToolCallClassification) => GatePreview;
   /** Runs on each sleep, before the clock advances. */
@@ -89,6 +91,23 @@ interface Fixture {
 }
 
 const BASE_TIME = new Date('2026-08-21T09:00:00.000Z');
+
+/**
+ * The marker the orchestrator holds while a session runs. Written to disk in
+ * `beforeEach`, as resumption leaves it (SDD §4.4 step 5).
+ */
+const EXECUTING_MARKER: StateMarker = {
+  state: 'EXECUTING',
+  tourId: 'tour-3-b-i',
+  jobIndex: 3,
+  interruptedState: null,
+  attemptCount: 2,
+  gateId: null,
+  headCommit: null,
+  updatedAt: '2026-08-21T08:00:00.000Z',
+};
+
+let currentMarker: StateMarker;
 
 function interceptor(fixture: Fixture = {}) {
   const pollIntervalMs = fixture.pollIntervalMs ?? 400;
@@ -103,9 +122,7 @@ function interceptor(fixture: Fixture = {}) {
       ...config,
       gateWait: { value: Math.round(gateWaitMs / 1_000), unit: 's', milliseconds: gateWaitMs },
     },
-    tourId: 'tour-3-b-i',
-    jobIndex: 3,
-    interruptedState: 'EXECUTING',
+    marker: () => currentMarker,
     buildPreview: fixture.buildPreview ?? buildPreview,
     pollIntervalMs,
     now: () => clock,
@@ -118,7 +135,6 @@ function interceptor(fixture: Fixture = {}) {
         clock = new Date(clock.getTime() + tickMs);
         setImmediate(resolve);
       }),
-    ...(fixture.attemptCount === undefined ? {} : { attemptCount: fixture.attemptCount }),
     ...(fixture.notify === undefined ? {} : { notify: fixture.notify }),
   });
 
@@ -328,11 +344,7 @@ describe('a gate that cannot be raised denies rather than passing', () => {
 describe('gate_wait elapsing parks the tour', () => {
   /** A waiting period the fixture's clock crosses in three polls. */
   function parking(notify?: (notification: ParkedNotification) => void) {
-    return interceptor({
-      gateWaitMs: 1_000,
-      attemptCount: 2,
-      ...(notify === undefined ? {} : { notify }),
-    });
+    return interceptor({ gateWaitMs: 1_000, ...(notify === undefined ? {} : { notify }) });
   }
 
   async function park(interceptorUnderTest: ReturnType<typeof interceptor>): Promise<void> {
@@ -482,19 +494,25 @@ describe('the waiting period has two edges and both are named', () => {
   });
 });
 
-describe('the tour parked the moment the entry was stamped', () => {
-  it('keeps the parked outcome when the marker cannot be written', async () => {
-    const parker = interceptor({ gateWaitMs: 1_000, pollIntervalMs: 1_000 });
+describe('a marker the gate cannot write denies the call', () => {
+  it('does not let the call proceed when the gated marker cannot be written', async () => {
+    // The marker follows the gate before the wait begins, so a failure here is
+    // a gate that was raised on disk and not recorded in the state. The call is
+    // denied rather than taken: an orchestrator that cannot record where it is
+    // has no basis for letting anything through.
+    const parker = interceptor({ gateWaitMs: 1_000 });
 
-    // The marker's own path is occupied by a directory, so the atomic rename
-    // onto it fails while the gate queue beside it keeps working.
+    rmSync(wardroomPaths(root).stateFile, { force: true });
     mkdirSync(wardroomPaths(root).stateFile, { recursive: true });
 
-    await parker.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
-      signal: new AbortController().signal,
-    });
+    const output = (await parker.hook(
+      toolCall('Bash', { command: 'git push origin main' }),
+      'tu-1',
+      { signal: new AbortController().signal },
+    )) as SyncHookJSONOutput;
 
-    expect(parker.outcome().kind).toBe('parked');
+    expect(permission(output)).toBe('deny');
+    expect(parker.outcome().kind).toBe('running');
   });
 });
 
@@ -598,5 +616,108 @@ describe('an approval authorizes one call and is consumed by it (D-61)', () => {
     });
 
     expect(list(root, { includeResolved: true })).toHaveLength(2);
+  });
+});
+
+describe('the marker follows the gate, so a death cannot resume past it', () => {
+  it('records GATED with the gate it waits on, before anyone answers', async () => {
+    // The default waiting period, so the gate is still pending when the test
+    // looks: a short one would have parked during the settle below.
+    const raised = interceptor();
+    const pending = raised.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+    await settle();
+
+    const read = readMarker(root);
+    expect(read.kind).toBe('ok');
+    if (read.kind !== 'ok') return;
+    expect(read.marker.state).toBe('GATED');
+    expect(read.marker.interruptedState).toBe('EXECUTING');
+    expect(read.marker.gateId).toBe(list(root)[0]?.gateId);
+
+    decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+    await pending;
+  });
+
+  it('returns the marker to the state the gate interrupted once it is decided', async () => {
+    let answered = false;
+    const releasing = interceptor({
+      onSleep: () => {
+        if (answered) return;
+        answered = true;
+        decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+      },
+    });
+
+    await releasing.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+
+    const read = readMarker(root);
+    expect(read.kind === 'ok' && read.marker.state).toBe('EXECUTING');
+    expect(read.kind === 'ok' && read.marker.gateId).toBeNull();
+  });
+
+  it('returns the marker on a rejection too, for the loop to record as a job', async () => {
+    let answered = false;
+    const rejecting = interceptor({
+      onSleep: () => {
+        if (answered) return;
+        answered = true;
+        decide(root, list(root)[0]?.gateId ?? '', 'rejected', 'owner');
+      },
+    });
+
+    await rejecting.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+
+    const read = readMarker(root);
+    expect(read.kind === 'ok' && read.marker.state).toBe('EXECUTING');
+    expect(read.kind === 'ok' && read.marker.gateId).toBeNull();
+  });
+
+  it('writes every marker through the machine, so no state is invented', async () => {
+    // The mutation this exists for: a hand-built marker literal writes a shape
+    // the transition table never produced, and nothing checks it. Parking from
+    // a state that never gated would be written without complaint.
+    const parking = interceptor({ gateWaitMs: 1_000 });
+    await parking.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+
+    const read = readMarker(root);
+    expect(read.kind).toBe('ok');
+    if (read.kind !== 'ok') return;
+    expect(read.marker.state).toBe('PARKED');
+    expect(read.marker.interruptedState).toBe('EXECUTING');
+    expect(read.marker.gateId).toBe(list(root)[0]?.gateId);
+  });
+
+  it('leaves the marker alone when a standing approval releases the call', async () => {
+    // No gate was raised, so no state changed. A transition written here would
+    // record one that did not happen.
+    const raised = interceptor({ gateWaitMs: 1_000 });
+    await raised.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+    decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+    const before = readMarker(root);
+
+    const later = interceptor();
+    await later.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-2', {
+      signal: new AbortController().signal,
+    });
+
+    expect(readMarker(root)).toEqual(before);
+  });
+
+  it('leaves the marker alone for an ungated call', async () => {
+    const before = readMarker(root);
+
+    await call('Bash', { command: 'npm run test' });
+
+    expect(readMarker(root)).toEqual(before);
   });
 });
