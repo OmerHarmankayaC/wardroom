@@ -2,6 +2,7 @@ import type { ProjectConfig } from '../config/schema.js';
 import { raiseTourBudgetGate } from '../gates/tour-budget.js';
 import {
   type LastFailure,
+  failedRoute,
   failureEvidence,
   readLastFailure,
   writeLastFailure,
@@ -136,19 +137,20 @@ export function driveFailed(input: DriveFailedInput): FailedResult {
   const now = (input.now ?? (() => new Date()))();
   const rules = { attemptBudget: input.config.attemptBudget };
   const failure = readLastFailure(input.root);
+  const route = failedRoute(input.marker.attemptCount, input.config.attemptBudget, failure);
 
-  if (failure === null) {
+  if (route === 'reverify') {
     return {
       kind: 'reverify',
       marker: advance(input.root, input.marker, { type: 'reverify' }, rules, now).marker,
     };
   }
 
-  if (input.marker.attemptCount < input.config.attemptBudget) {
+  if (route === 'retry') {
     return {
       kind: 'retry',
       marker: advance(input.root, input.marker, { type: 'retry' }, rules, now).marker,
-      failure,
+      failure: failure as LastFailure,
     };
   }
 

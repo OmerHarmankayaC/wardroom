@@ -149,3 +149,30 @@ export function failureEvidence(record: LastFailure | null): string {
     ? `\`${record.command}\` exited ${record.exitCode}:\n${record.output}`
     : `the plan did not parse (${record.field}: ${record.problem}).`;
 }
+
+/**
+ * What a tour in `FAILED` does next (SDD §4.4 step 4, §3.2, FR-1.3).
+ *
+ * One home, because two consumers ask it: the resume procedure reconstructing
+ * a next action from files alone, and the drive that actually takes the step.
+ * They had begun to disagree, and on the case the document is most explicit
+ * about: `resume` decided from the counter alone, so with no record on disk it
+ * answered retry or gate where §4.4 says re-run verification. A decision with
+ * two homes is a decision that drifts, and this one had already drifted.
+ *
+ * The record decides before the counter does. With no evidence there is
+ * nothing to say which side of the budget the tour was on, and either guess is
+ * worse than looking again: a guessed gate asks the owner about a failure
+ * nobody can show them, and a guessed retry spends an attempt on a tour that
+ * may already have spent them all.
+ */
+export type FailedRoute = 'retry' | 'gate' | 'reverify';
+
+export function failedRoute(
+  attemptCount: number,
+  attemptBudget: number,
+  failure: LastFailure | null,
+): FailedRoute {
+  if (failure === null) return 'reverify';
+  return attemptCount < attemptBudget ? 'retry' : 'gate';
+}

@@ -6,6 +6,7 @@ import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import {
   type LastFailure,
   clearLastFailure,
+  failedRoute,
   readLastFailure,
   writeLastFailure,
 } from '../../src/state/last-failure.js';
@@ -141,5 +142,28 @@ describe('an unusable record is an absence, not a guess', () => {
     );
 
     expect(readLastFailure(root)).toBeNull();
+  });
+});
+
+describe('the record says what FAILED does next, in one place (§4.4 step 4)', () => {
+  it('retries while the count is under the budget', () => {
+    expect(failedRoute(1, 2, verification)).toBe('retry');
+  });
+
+  it('raises the gate once the count reaches it', () => {
+    expect(failedRoute(2, 2, verification)).toBe('gate');
+  });
+
+  it('re-verifies where no record survives, rather than guessing', () => {
+    // With no evidence there is nothing to say which side of the budget the
+    // tour was on, and either guess is worse than looking again. The absent
+    // record decides this, not the counter, which is why the counter alone is
+    // not enough to answer.
+    expect(failedRoute(2, 2, null)).toBe('reverify');
+    expect(failedRoute(0, 2, null)).toBe('reverify');
+  });
+
+  it('answers the same for a planning record, which spends the same counter', () => {
+    expect(failedRoute(2, 2, planning)).toBe('gate');
   });
 });

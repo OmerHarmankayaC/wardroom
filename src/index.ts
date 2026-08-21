@@ -281,3 +281,4 @@ export {
   driveClosing,
 } from './loop/closing.js';
 export { type CeilingVerdict, ceilingVerdict } from './loop/ceiling.js';
+export { type FailedRoute, failedRoute } from './state/last-failure.js';

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import { decide, enqueue, park } from '../../src/gates/queue.js';
+import { writeLastFailure } from '../../src/state/last-failure.js';
 import {
   type StateMarker,
   type TourState,
@@ -89,6 +90,18 @@ function given(state: TourState, overrides: Partial<StateMarker> = {}): void {
   writeMarker(root, markerFor(state, overrides));
 }
 
+/** The failure the attempt count was spent on (SDD §3.0, D-48). */
+function givenFailureRecord(attempt: number): void {
+  ensureRunDir(root);
+  writeLastFailure(root, {
+    kind: 'verification',
+    attempt,
+    command: 'npm run test',
+    exitCode: 1,
+    output: '3 tests failed',
+  });
+}
+
 function givenUnreadableMarker(): void {
   ensureRunDir(root);
   writeFileSync(wardroomPaths(root).stateFile, '{"state": "EXECUT');
@@ -163,6 +176,7 @@ describe('resume, per state', () => {
   });
 
   it('retries execution from FAILED while the attempt budget holds', () => {
+    givenFailureRecord(2);
     given('FAILED', { attemptCount: 2 });
 
     const result = resume(root);
@@ -172,6 +186,7 @@ describe('resume, per state', () => {
   });
 
   it('raises a tour-budget gate from FAILED once the budget is spent', () => {
+    givenFailureRecord(config.attempt_budget);
     given('FAILED', { attemptCount: config.attempt_budget });
 
     const result = resume(root);
@@ -346,6 +361,31 @@ function raiseGate(at?: Date): string {
     at === undefined ? {} : { now: at },
   ).gateId;
 }
+
+describe('FAILED reads the record before the counter (§4.4 step 4)', () => {
+  it('re-runs verification where no record survives, whatever the counter says', () => {
+    // The divergence this closed: resume decided from the counter alone, so
+    // with no record on disk it answered retry or gate where §4.4 says re-run
+    // verification, and the drive that takes the step answered otherwise. One
+    // decision, two homes, already disagreeing.
+    given('FAILED', { attemptCount: config.attempt_budget });
+
+    expect(resume(root).nextAction).toBe('RERUN_VERIFICATION');
+  });
+
+  it('re-runs verification below the budget too, for the same reason', () => {
+    given('FAILED', { attemptCount: 0 });
+
+    expect(resume(root).nextAction).toBe('RERUN_VERIFICATION');
+  });
+
+  it('agrees with the drive that takes the step', () => {
+    givenFailureRecord(config.attempt_budget);
+    given('FAILED', { attemptCount: config.attempt_budget });
+
+    expect(resume(root).nextAction).toBe('RAISE_TOUR_BUDGET_GATE');
+  });
+});
 
 describe('a gate decided while the process was down', () => {
   it.each(['GATED', 'PARKED'] as const)('re-presents a still-pending gate from %s', (state) => {

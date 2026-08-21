@@ -5,6 +5,7 @@ import { ensureRunDir, wardroomPaths } from '../config/paths.js';
 import type { GateEntry } from '../gates/schema.js';
 import { readEntry } from '../gates/store.js';
 import { headCommit, isWorkingTreeDirty } from './git.js';
+import { type LastFailure, failedRoute, readLastFailure } from './last-failure.js';
 import {
   GATE_BEARING_STATES,
   type StateMarker,
@@ -110,6 +111,7 @@ function actionFor(
   marker: StateMarker,
   attemptBudget: number,
   gate: GateEntry | null,
+  failure: LastFailure | null,
 ): NextAction {
   switch (state) {
     case 'IDLE':
@@ -131,7 +133,17 @@ function actionFor(
       // twice.
       return gate !== null && gate.status !== 'pending' ? 'APPLY_GATE_DECISION' : 'REPRESENT_GATE';
     case 'FAILED':
-      return marker.attemptCount < attemptBudget ? 'RETRY_EXECUTION' : 'RAISE_TOUR_BUDGET_GATE';
+      // The record decides before the counter does (§4.4 step 4). Asked here
+      // through the same function the drive asks, because this decision had
+      // two homes and they had already disagreed about the absent record.
+      switch (failedRoute(marker.attemptCount, attemptBudget, failure)) {
+        case 'retry':
+          return 'RETRY_EXECUTION';
+        case 'gate':
+          return 'RAISE_TOUR_BUDGET_GATE';
+        case 'reverify':
+          return 'RERUN_VERIFICATION';
+      }
   }
 }
 
@@ -256,7 +268,7 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
 
   return finish(root, {
     state: marker.state,
-    nextAction: actionFor(marker.state, marker, attemptBudget, gate),
+    nextAction: actionFor(marker.state, marker, attemptBudget, gate, readLastFailure(root)),
     marker: { ...marker, headCommit: head, updatedAt: now.toISOString() },
     headCommit: head,
     headCommitStale,
