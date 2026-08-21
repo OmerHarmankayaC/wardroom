@@ -1,5 +1,5 @@
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { wardroomPaths } from '../config/paths.js';
+import { appendJsonLine, readJsonLines } from '../fs/jsonl.js';
 
 /**
  * The gate audit log (SDD §3.1): `.wardroom/run/gates/audit.jsonl`,
@@ -43,16 +43,13 @@ interface OnDiskLine {
 
 /** Appends one line. Never reads, never rewrites, never truncates. */
 export function appendAuditLine(root: string, line: AuditLine): void {
-  const { gatesDir, auditLog } = wardroomPaths(root);
-  mkdirSync(gatesDir, { recursive: true });
-
   const onDisk: OnDiskLine = {
     ts: line.ts,
     gate_id: line.gateId,
     event: line.event,
     payload: { ...line.payload },
   };
-  appendFileSync(auditLog, `${JSON.stringify(onDisk)}\n`);
+  appendJsonLine(wardroomPaths(root).auditLog, onDisk);
 }
 
 /**
@@ -77,30 +74,7 @@ export function recordThenAct<T>(root: string, line: AuditLine, action: () => T)
  * unparsable is a corrupted trail and is reported.
  */
 export function readAuditLines(root: string): AuditLine[] {
-  let text: string;
-  try {
-    text = readFileSync(wardroomPaths(root).auditLog, 'utf8');
-  } catch {
-    return [];
-  }
-
-  const complete = text.split('\n');
-  // The split's last element is the text after the final newline: empty for a
-  // cleanly terminated log, a partial record otherwise. Either way it is not a
-  // line that was finished being written.
-  complete.pop();
-
-  return complete.map((line, index) => {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch (error) {
-      throw new Error(
-        `${wardroomPaths(root).auditLog} line ${index + 1} is not valid JSON: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+  return readJsonLines(wardroomPaths(root).auditLog).map((raw) => {
     const record = raw as OnDiskLine;
     return {
       ts: record.ts,

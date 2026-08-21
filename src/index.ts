@@ -217,3 +217,15 @@ export {
   driveExecuting,
 } from './loop/executing.js';
 export { PRE_RECORD_GATE_CLASSES } from './gates/schema.js';
+export { appendJsonLine, readJsonLines } from './fs/jsonl.js';
+export {
+  READ_CATEGORIES,
+  type ReadCategory,
+  type TokenTotals,
+  type UsageLine,
+  type UsageQuery,
+  type UsageSummary,
+  appendUsage,
+  readUsage,
+  usageSummary,
+} from './usage/record.js';
