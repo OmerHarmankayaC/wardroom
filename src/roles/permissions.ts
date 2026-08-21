@@ -1,3 +1,4 @@
+import { RUN_DIR_NAME, WARDROOM_DIR_NAME } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { tourLogDirectory, versionCarryingDocuments } from '../documents/set.js';
 import { gateClassesReachableBy } from '../gates/classify.js';
@@ -59,7 +60,7 @@ export function fileRule(...segments: readonly string[]): string {
  * code (SDD §3.1, §4.2). A session that could edit any of the three could
  * approve its own gate by editing the file that records it.
  */
-export const RUNTIME_DENY_RULE = fileRule('.wardroom/run', '**');
+export const RUNTIME_DENY_RULE = fileRule(WARDROOM_DIR_NAME, RUN_DIR_NAME, '**');
 
 /**
  * The calls a role may make without being asked about them.

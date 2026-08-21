@@ -8,6 +8,15 @@ import { join } from 'node:path';
  * excluded (BACKLOG D-15). The directory shape encodes that split so no file
  * is ever ambiguous. See ./tracking.ts.
  */
+/**
+ * The two directory names the layout is built from, named rather than written
+ * out at each use. The permission rules deny the runtime directory by path
+ * (../roles/permissions.ts), and a rule holding its own copy of the layout is a
+ * rule that stops denying anything the day the layout moves.
+ */
+export const WARDROOM_DIR_NAME = '.wardroom';
+export const RUN_DIR_NAME = 'run';
+
 export interface WardroomPaths {
   /** The project root: the git repository Wardroom manages. */
   readonly root: string;
@@ -25,8 +34,8 @@ export interface WardroomPaths {
 
 /** Resolves the layout for a project root. Touches no filesystem. */
 export function wardroomPaths(root: string): WardroomPaths {
-  const wardroomDir = join(root, '.wardroom');
-  const runDir = join(wardroomDir, 'run');
+  const wardroomDir = join(root, WARDROOM_DIR_NAME);
+  const runDir = join(wardroomDir, RUN_DIR_NAME);
   const gatesDir = join(runDir, 'gates');
   return {
     root,

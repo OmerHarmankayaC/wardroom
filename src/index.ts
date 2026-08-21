@@ -197,3 +197,4 @@ export {
 export { type InterceptionOutcome, isErrorOutcome, parkingDeadline } from './roles/intercept.js';
 export { formatDuration } from './config/duration.js';
 export { GATE_BEARING_STATES } from './state/marker.js';
+export { RUN_DIR_NAME, WARDROOM_DIR_NAME } from './config/paths.js';

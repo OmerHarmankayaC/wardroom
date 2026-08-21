@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { RUN_DIR_NAME, WARDROOM_DIR_NAME, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig, ProjectLevel } from '../../src/config/schema.js';
 import { tourLogDirectory, versionCarryingDocuments } from '../../src/documents/set.js';
 import { GATE_REACHING_TOOLS, gateClassesReachableBy } from '../../src/gates/classify.js';
 import {
   PermissionRuleRefusedError,
+  RUNTIME_DENY_RULE,
   checkAllowRules,
   documentDenyRules,
   rolePermissions,
@@ -180,5 +182,22 @@ describe('a bare tool name is refused where that tool can reach a gate class', (
 
   it('reaches the shell to push, which is the case A.2 warns about by name', () => {
     expect(gateClassesReachableBy('Bash')).toContain('push');
+  });
+});
+
+describe('the runtime denial names the layout, not a copy of it', () => {
+  it('denies exactly the directory the layout module defines', () => {
+    const runDir = wardroomPaths('/repositories/example').runDir;
+    const repoRelative = runDir.slice('/repositories/example/'.length);
+
+    expect(RUNTIME_DENY_RULE).toBe(`Edit(/${repoRelative}/**)`);
+  });
+
+  it('would follow the layout if the layout moved', () => {
+    // The mutation this exists for: writing `.wardroom/run` into the rule by
+    // hand gives the layout two homes, and the copy in the rule is the one
+    // nobody updates. The rule is built from the same constants ./paths.ts
+    // builds the directory from.
+    expect(RUNTIME_DENY_RULE).toContain(`${WARDROOM_DIR_NAME}/${RUN_DIR_NAME}`);
   });
 });
