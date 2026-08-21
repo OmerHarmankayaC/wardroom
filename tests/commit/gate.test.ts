@@ -3,10 +3,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type CommitOccasion, WIP_SUBJECT_PREFIX, checkCommit } from '../../src/commit/gate.js';
-import { wardroomPaths } from '../../src/config/paths.js';
+import {
+  type CommitOccasion,
+  type JobBoundaryOccasion,
+  WIP_SUBJECT_PREFIX,
+  checkCommit,
+} from '../../src/commit/gate.js';
+import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
 import { recordClosureBaseline } from '../../src/documents/baseline.js';
+import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
+import type { VerificationResult, VerifyRunner } from '../../src/verify/run.js';
 
 /**
  * The commit gate (SDD §4.5, FR-6.1, FR-7.1).
@@ -30,7 +37,11 @@ function configFor(docRoot: string): ProjectConfig {
     docRoot,
     defaultBranch: 'main',
     stack: { language: 'TypeScript', runtime: 'node>=18', packageManager: 'npm' },
-    verify: ['npm test'],
+    // A green definition that passes in an empty temporary repository, so the
+    // cases about documents and occasions are not also cases about a suite.
+    // The gate runs this list for real at every job boundary (D-58); the tests
+    // that are about the run inject their own answer instead.
+    verify: ['true'],
     authMode: 'api_key',
     gateWait: { value: 24, unit: 'h', milliseconds: 86_400_000 },
     attemptBudget: 3,
@@ -70,7 +81,7 @@ function write(relativePath: string, contents: string): void {
   writeFileSync(target, contents);
 }
 
-const boundary: CommitOccasion = {
+const boundary: JobBoundaryOccasion = {
   kind: 'job-boundary',
   tourId: 'tour-2',
   jobIndex: 6,
@@ -124,7 +135,12 @@ describe('document integrity against a tracked document root', () => {
       occasion: boundary,
     });
 
-    expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'head' });
+    expect(verdict).toEqual({
+      allowed: true,
+      blocks: [],
+      baselineSource: 'head',
+      greenSource: 'run',
+    });
   });
 
   it('allows a commit that touches no canonical document', () => {
@@ -241,7 +257,12 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
         stagedPaths: stagedSrs(UNTRACKED_DOCS),
         occasion: boundary,
       }),
-    ).toEqual({ allowed: true, blocks: [], baselineSource: 'doc-baseline.json' });
+    ).toEqual({
+      allowed: true,
+      blocks: [],
+      baselineSource: 'doc-baseline.json',
+      greenSource: 'run',
+    });
   });
 
   it('blocks a version bump with no change-log row for it', () => {
@@ -272,7 +293,12 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
     // from has nothing for its version to have to differ from either. The
     // verdict says which it was, so "nothing to compare" is never read as
     // "compared and clean".
-    expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'no-baseline' });
+    expect(verdict).toEqual({
+      allowed: true,
+      blocks: [],
+      baselineSource: 'no-baseline',
+      greenSource: 'run',
+    });
   });
 
   it('leaves PROGRESS outside the rule, because the level says so', () => {
@@ -292,7 +318,12 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
     // PROGRESS is canonical at every level and carries neither a version nor a
     // change log by design (SRS §3.2, D-31). It is not a document the check
     // looked at and cleared: it is not in the set the check reads at all.
-    expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'none' });
+    expect(verdict).toEqual({
+      allowed: true,
+      blocks: [],
+      baselineSource: 'none',
+      greenSource: 'run',
+    });
   });
 
   it('still leaves PROGRESS outside the rule when a version block appears in it', () => {
@@ -313,7 +344,7 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
         stagedPaths: [join(UNTRACKED_DOCS, 'PROGRESS.md')],
         occasion: boundary,
       }),
-    ).toEqual({ allowed: true, blocks: [], baselineSource: 'none' });
+    ).toEqual({ allowed: true, blocks: [], baselineSource: 'none', greenSource: 'run' });
   });
 
   it('blocks a version-carrying document whose version block was deleted', () => {
@@ -356,10 +387,18 @@ describe('the occasion (FR-7.1)', () => {
   it('blocks a job boundary that is not green', () => {
     const config = withTrackedDocuments('1.3');
 
-    const verdict = checkCommit(root, config, {
-      stagedPaths: [],
-      occasion: { ...boundary, verificationGreen: false },
-    });
+    const verdict = checkCommit(
+      root,
+      config,
+      { stagedPaths: [], occasion: boundary },
+      {
+        runVerification: () => ({
+          kind: 'failed',
+          failure: { command: 'true', exitCode: 1, output: 'a test failed' },
+          ran: ['true'],
+        }),
+      },
+    );
 
     expect(verdict.blocks[0]).toContain('not green');
   });
@@ -468,7 +507,12 @@ describe('the occasion (FR-7.1)', () => {
         occasion: { kind: 'wip-stop', reason: 'context ceiling reached mid job 6' },
       });
 
-      expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'none' });
+      expect(verdict).toEqual({
+        allowed: true,
+        blocks: [],
+        baselineSource: 'none',
+        greenSource: 'not-required',
+      });
     } finally {
       rmSync(unborn, { recursive: true, force: true });
     }
@@ -516,5 +560,135 @@ describe('a request that is wrong in more than one way', () => {
     expect(verdict.blocks).toHaveLength(2);
     expect(verdict.blocks.some((block) => block.startsWith('SRS.md'))).toBe(true);
     expect(verdict.blocks.some((block) => block.startsWith('occasion'))).toBe(true);
+  });
+});
+
+describe('green is observed, not claimed (D-58)', () => {
+  // Built once: withTrackedDocuments creates a commit, and a helper that
+  // committed on every call would fail the second time with nothing to commit.
+  let config: ProjectConfig;
+
+  beforeEach(() => {
+    config = withTrackedDocuments('1.3');
+  });
+
+  /** A runner that answers without running anything, so the suite stays fast. */
+  function answering(result: VerificationResult): VerifyRunner {
+    return () => result;
+  }
+
+  const green: VerificationResult = { kind: 'green', ran: ['npm run test'] };
+  const failed: VerificationResult = {
+    kind: 'failed',
+    failure: { command: 'npm run test', exitCode: 1, output: '3 tests failed' },
+    ran: ['npm run test'],
+  };
+
+  function ask(claim: boolean, result: VerificationResult) {
+    return checkCommit(
+      root,
+      config,
+      { stagedPaths: [], occasion: { ...boundary, verificationGreen: claim } },
+      { runVerification: answering(result) },
+    );
+  }
+
+  it('denies the commit when the definition does not pass', () => {
+    const verdict = ask(true, failed);
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toMatch(/npm run test/);
+    expect(verdict.blocks.join('\n')).toMatch(/3 tests failed/);
+  });
+
+  it('allows the commit when the definition passes', () => {
+    expect(ask(false, green).allowed).toBe(true);
+  });
+
+  it('answers the same way whatever the session claims', () => {
+    // The fabrication test. A committing session that reports itself green is
+    // the subject of the check reporting on the condition the check exists to
+    // enforce, which is D-55's defect one level up (FR-7.1, D-58).
+    expect(ask(true, failed)).toEqual(ask(false, failed));
+    expect(ask(true, green)).toEqual(ask(false, green));
+  });
+
+  it('names the run as the source, so nobody reads the denial as the claim', () => {
+    expect(ask(true, failed).greenSource).toBe('run');
+  });
+
+  it('refuses a boundary whose project has no green definition (FR-1.5)', () => {
+    const verdict = ask(true, {
+      kind: 'no-definition',
+      reason: 'the project contract carries no `verify` commands',
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toMatch(/verify/);
+  });
+
+  it('does not run the definition for a WIP stop, which is not a green occasion', () => {
+    // FR-7.1's second occasion is a stop with unfinished work, which is
+    // exactly when the suite is expected to be red. Requiring green there
+    // would forbid the commit the rule exists to make possible.
+    let ran = 0;
+    const verdict = checkCommit(
+      root,
+      config,
+      { stagedPaths: [], occasion: { kind: 'wip-stop', reason: 'context running low' } },
+      {
+        runVerification: () => {
+          ran += 1;
+          return failed;
+        },
+      },
+    );
+
+    expect(ran).toBe(0);
+    expect(verdict.greenSource).toBe('not-required');
+    // The branch check is what refuses this one, not the suite.
+    expect(verdict.blocks.join('\n')).not.toMatch(/npm run test/);
+  });
+
+  it('leaves the state marker untouched, whatever the run found', () => {
+    // D-58: the boundary run changes no state. A failure here denies the
+    // commit and means the job is not done; it is not a failed verification
+    // and it does not spend the attempt budget (FR-1.3, §4.3).
+    ensureRunDir(root);
+    const before: StateMarker = {
+      state: 'EXECUTING',
+      tourId: 'tour-3-b-ii',
+      jobIndex: 4,
+      interruptedState: null,
+      attemptCount: 2,
+      gateId: null,
+      headCommit: null,
+      updatedAt: '2026-08-21T09:00:00.000Z',
+    };
+    writeMarker(root, before);
+
+    ask(true, failed);
+
+    const after = readMarker(root);
+    expect(after.kind).toBe('ok');
+    expect(after.kind === 'ok' && after.marker).toEqual(before);
+    expect(after.kind === 'ok' && after.marker.attemptCount).toBe(2);
+  });
+
+  it('runs the project own verify list, not a list of its own', () => {
+    const seen: (readonly string[])[] = [];
+    checkCommit(
+      root,
+      { ...config, verify: ['npm run test', 'npm run lint'] },
+      { stagedPaths: [], occasion: boundary },
+      {
+        runVerification: (_root, commands) => {
+          seen.push(commands);
+          return green;
+        },
+      },
+    );
+
+    expect(seen).toEqual([['npm run test', 'npm run lint']]);
   });
 });

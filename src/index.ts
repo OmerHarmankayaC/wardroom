@@ -201,3 +201,10 @@ export { RUN_DIR_NAME, WARDROOM_DIR_NAME } from './config/paths.js';
 export { commandSegments, isCommitCall } from './gates/classify.js';
 export { type PermissionSupplierInput, createPermissionSupplier } from './roles/supplier.js';
 export { stagedPaths } from './state/git.js';
+export {
+  type VerificationFailure,
+  type VerificationResult,
+  type VerifyRunner,
+  runVerification,
+} from './verify/run.js';
+export type { CommitGateOptions } from './commit/gate.js';

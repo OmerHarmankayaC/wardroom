@@ -13,6 +13,7 @@ import { enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
 import { headCommit, stagedPaths } from '../state/git.js';
 import { type StateMarker, type TourState, writeMarker } from '../state/marker.js';
+import type { VerifyRunner } from '../verify/run.js';
 
 /**
  * Gate interception as a `PreToolUse` hook (SDD §4.2, BACKLOG D-43).
@@ -60,6 +61,12 @@ export interface GateInterceptorInput {
    * no basis for calling anything a boundary.
    */
   readonly commitOccasion?: () => CommitOccasion;
+  /**
+   * The green definition run the commit gate uses at a job boundary (§4.3,
+   * D-58). Injected so the orchestrator owns the runner; omitted, the gate
+   * runs the project's commands for real.
+   */
+  readonly runVerification?: VerifyRunner;
   /** Failed verification attempts so far, carried into the marker (FR-1.3). */
   readonly attemptCount?: number;
   /** Where the FR-3.3 notification goes. Absent is a surface that cannot be reached. */
@@ -304,10 +311,12 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     }
 
     try {
-      const verdict = checkCommit(input.root, input.config, {
-        stagedPaths: stagedPaths(input.root),
-        occasion: input.commitOccasion(),
-      });
+      const verdict = checkCommit(
+        input.root,
+        input.config,
+        { stagedPaths: stagedPaths(input.root), occasion: input.commitOccasion() },
+        input.runVerification === undefined ? {} : { runVerification: input.runVerification },
+      );
       return verdict.allowed ? UNTOUCHED : commitRefusal(verdict.blocks);
     } catch (error) {
       // Fails closed, for the same reason the gate path does: a check that

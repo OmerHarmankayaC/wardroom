@@ -9,6 +9,7 @@ import {
   versionCarryingDocuments,
 } from '../documents/set.js';
 import { currentBranch, fileAtHead, headSubject, isPathTracked } from '../state/git.js';
+import { type VerifyRunner, runVerification } from '../verify/run.js';
 
 /**
  * The commit gate (SDD §4.5). Every commit Wardroom makes passes it first.
@@ -44,9 +45,22 @@ export interface JobBoundaryOccasion {
   readonly kind: 'job-boundary';
   readonly tourId: string;
   readonly jobIndex: number;
-  /** The job's acceptance criterion passed. */
+  /**
+   * The job's acceptance criterion passed.
+   *
+   * This one is claimed and cannot be otherwise: an acceptance criterion is
+   * prose and nothing in a staged set reveals whether it holds. It sits beside
+   * the audit in T-6 as a condition of a boundary that no gate can observe.
+   */
   readonly acceptancePassed: boolean;
-  /** Every command in the green definition exited zero (SRS §3.4). */
+  /**
+   * The session's own account of its greenness. Recorded and NOT consulted
+   * (D-58): the gate runs the green definition itself, because a check that
+   * accepts its subject's word for the condition it exists to enforce is
+   * D-55's defect one level up. The field stays so that a session which claims
+   * green can be seen to have claimed it, and so a test can fabricate one and
+   * show the verdict does not move.
+   */
   readonly verificationGreen: boolean;
 }
 
@@ -69,6 +83,15 @@ export interface CommitRequest {
   readonly occasion: CommitOccasion;
 }
 
+export interface CommitGateOptions {
+  /**
+   * The green definition run (§4.3). Injected so tests need not spend a real
+   * suite on every case; the default is the real run, because a gate whose
+   * observation is optional is a gate back to accepting the claim.
+   */
+  readonly runVerification?: VerifyRunner;
+}
+
 export interface CommitVerdict {
   readonly allowed: boolean;
   /** One stated reason per failed condition. Empty when the commit may proceed. */
@@ -82,6 +105,16 @@ export interface CommitVerdict {
    * "no data" gets read as "zero".
    */
   readonly baselineSource: 'head' | 'doc-baseline.json' | 'no-baseline' | 'none';
+  /**
+   * Where the green status came from. `run` is the only value that can satisfy
+   * a job boundary; `not-required` is the WIP stop, which is a stop with
+   * unfinished work and is exactly when the suite is expected to be red.
+   *
+   * Stated in the verdict so a reader never has to infer whether the gate
+   * observed green or was told it, which is the distinction D-58 exists to
+   * make and the one a boolean in the request cannot carry.
+   */
+  readonly greenSource: 'run' | 'not-required';
 }
 
 function isJobBoundary(occasion: CommitOccasion): occasion is JobBoundaryOccasion {
@@ -115,31 +148,59 @@ function checkWipBranch(root: string, defaultBranch: string, blocks: string[]): 
   }
 }
 
-function checkOccasion(
+/**
+ * Runs the green definition for a job boundary and reports what it found
+ * (§4.3, §4.5, D-58).
+ *
+ * The run changes no state. A failure here denies the commit, leaves
+ * `attempt_count` untouched and means the job is not done; it is not a failed
+ * verification and does not spend the attempt budget. That is the whole of the
+ * separation between this run and the one `VERIFYING` makes over the tour.
+ */
+function checkGreen(
   root: string,
-  defaultBranch: string,
-  occasion: CommitOccasion,
+  config: ProjectConfig,
+  runner: VerifyRunner,
+  occasion: JobBoundaryOccasion,
   blocks: string[],
 ): void {
+  const result = runner(root, config.verify);
+  if (result.kind === 'green') return;
+
+  if (result.kind === 'no-definition') {
+    blocks.push(
+      `green: job ${occasion.jobIndex} of ${occasion.tourId} cannot be shown green because ${result.reason}`,
+    );
+    return;
+  }
+
+  blocks.push(
+    `green: job ${occasion.jobIndex} of ${occasion.tourId} is not green. \`${result.failure.command}\` exited ${result.failure.exitCode}. This is the green definition run by the gate, not the session's report of it (D-58):\n${result.failure.output.trim()}`,
+  );
+}
+
+function checkOccasion(
+  root: string,
+  config: ProjectConfig,
+  runner: VerifyRunner,
+  occasion: CommitOccasion,
+  blocks: string[],
+): CommitVerdict['greenSource'] {
   if (isJobBoundary(occasion)) {
     if (!occasion.acceptancePassed) {
       blocks.push(
         `occasion: job ${occasion.jobIndex} of ${occasion.tourId} has not passed its acceptance criterion, so this is not a job boundary. ${EXPECTED}.`,
       );
     }
-    if (!occasion.verificationGreen) {
-      blocks.push(
-        `occasion: job ${occasion.jobIndex} of ${occasion.tourId} is not green, so this is not a job boundary. ${EXPECTED}.`,
-      );
-    }
-    return;
+    checkGreen(root, config, runner, occasion, blocks);
+    return 'run';
   }
 
   if (isWipStop(occasion)) {
     if (occasion.reason.trim() === '') {
       blocks.push('occasion: a WIP stop states why the tour is stopping with work unfinished.');
     }
-    checkWipBranch(root, defaultBranch, blocks);
+    checkWipBranch(root, config.defaultBranch, blocks);
     const subject = headSubject(root);
     if (subject?.startsWith(WIP_SUBJECT_PREFIX)) {
       // FR-7.1 permits ONE WIP commit. A second turns the escape hatch into
@@ -148,12 +209,13 @@ function checkOccasion(
         `occasion: HEAD is already a WIP stop (${JSON.stringify(subject)}). A stop with unfinished work produces one WIP commit, not a series. ${EXPECTED}.`,
       );
     }
-    return;
+    return 'not-required';
   }
 
   blocks.push(
     `occasion: ${JSON.stringify(occasion.kind)} is not an occasion to commit on. ${EXPECTED}.`,
   );
+  return 'not-required';
 }
 
 /** The baseline for one document, and where it came from. */
@@ -250,10 +312,17 @@ export function checkCommit(
   root: string,
   config: ProjectConfig,
   request: CommitRequest,
+  options: CommitGateOptions = {},
 ): CommitVerdict {
   const blocks: string[] = [];
   const baselineSource = checkDocuments(root, config, request.stagedPaths, blocks);
-  checkOccasion(root, config.defaultBranch, request.occasion, blocks);
+  const greenSource = checkOccasion(
+    root,
+    config,
+    options.runVerification ?? runVerification,
+    request.occasion,
+    blocks,
+  );
 
-  return { allowed: blocks.length === 0, blocks, baselineSource };
+  return { allowed: blocks.length === 0, blocks, baselineSource, greenSource };
 }

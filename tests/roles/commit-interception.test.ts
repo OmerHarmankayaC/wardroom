@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CommitOccasion } from '../../src/commit/gate.js';
+import type { CommitOccasion, JobBoundaryOccasion } from '../../src/commit/gate.js';
 import { wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
 import { readAuditLines } from '../../src/gates/audit.js';
@@ -13,6 +13,7 @@ import { list } from '../../src/gates/queue.js';
 import type { GatePreview } from '../../src/gates/schema.js';
 import { createGateInterceptor } from '../../src/roles/intercept.js';
 import { stagedPaths } from '../../src/state/git.js';
+import type { VerifyRunner } from '../../src/verify/run.js';
 
 /**
  * `git commit` is intercepted and the commit gate runs there (SDD §4.2, §4.5,
@@ -70,7 +71,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const boundary: CommitOccasion = {
+const boundary: JobBoundaryOccasion = {
   kind: 'job-boundary',
   tourId: 'tour-3-b-ii',
   jobIndex: 3,
@@ -82,7 +83,10 @@ function buildPreview(): GatePreview {
   throw new Error('a commit raises no gate, so no preview is ever built for one');
 }
 
-function interceptor(occasion: CommitOccasion = boundary) {
+/** A green definition that passes without spending a suite on it. */
+const green: VerifyRunner = () => ({ kind: 'green', ran: ['npm run test'] });
+
+function interceptor(occasion: CommitOccasion = boundary, runVerification: VerifyRunner = green) {
   return createGateInterceptor({
     root,
     config,
@@ -91,6 +95,7 @@ function interceptor(occasion: CommitOccasion = boundary) {
     interruptedState: 'EXECUTING',
     buildPreview,
     commitOccasion: () => occasion,
+    runVerification,
     sleep: () => new Promise((resolve) => setImmediate(resolve)),
   });
 }
@@ -107,8 +112,12 @@ function toolCall(toolName: string, toolInput: unknown): PreToolUseHookInput {
   };
 }
 
-async function call(command: string, occasion?: CommitOccasion): Promise<SyncHookJSONOutput> {
-  const { hook } = interceptor(occasion);
+async function call(
+  command: string,
+  occasion?: CommitOccasion,
+  runVerification?: VerifyRunner,
+): Promise<SyncHookJSONOutput> {
+  const { hook } = interceptor(occasion, runVerification);
   return (await hook(toolCall('Bash', { command }), 'tu-1', {
     signal: new AbortController().signal,
   })) as SyncHookJSONOutput;
@@ -296,6 +305,40 @@ describe("the staged set the gate judges is the repository's, not the call's", (
   });
 });
 
+describe('the denial from a red boundary reaches the session', () => {
+  it('carries the failing command and its output', async () => {
+    write('src/one.ts', 'export const one = 1;\n');
+    git('add', '-A');
+
+    const output = await call('git commit -m "feat: one"', boundary, () => ({
+      kind: 'failed',
+      failure: { command: 'npm run test', exitCode: 1, output: '3 tests failed' },
+      ran: ['npm run test'],
+    }));
+
+    expect(permission(output)).toBe('deny');
+    expect(reason(output)).toMatch(/npm run test/);
+    expect(reason(output)).toMatch(/3 tests failed/);
+  });
+
+  it('denies it even though the session reported itself green', async () => {
+    write('src/one.ts', 'export const one = 1;\n');
+    git('add', '-A');
+
+    const output = await call(
+      'git commit -m "feat: one"',
+      { ...boundary, verificationGreen: true },
+      () => ({
+        kind: 'failed',
+        failure: { command: 'npm run test', exitCode: 1, output: '' },
+        ran: ['npm run test'],
+      }),
+    );
+
+    expect(permission(output)).toBe('deny');
+  });
+});
+
 describe('an ordinary shell call is untouched', () => {
   it('passes a green definition command through', async () => {
     expect(await call('npm run test')).toEqual({});
@@ -323,6 +366,7 @@ describe('an ordinary shell call is untouched', () => {
         branch: 'main',
       }),
       commitOccasion: () => boundary,
+      runVerification: green,
       pollIntervalMs: config.gateWait.milliseconds,
       now: () => clock,
       sleep: (ms) =>
