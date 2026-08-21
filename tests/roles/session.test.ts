@@ -194,3 +194,40 @@ describe('the rules are anchored against the contract as it is actually written'
     ]);
   });
 });
+
+describe('a role prompt paraphrases documents, so it names the ones it paraphrases', () => {
+  /**
+   * The one home rule has a special case for a fact written in a document and
+   * restated in code: the restatement is allowed, but it cites the section, and
+   * something makes divergence noisy (dev-protocol failure pattern 1).
+   *
+   * A prompt cannot be pinned to a document mechanically, because it is prose.
+   * What can be pinned is the citation, which is what a reader follows when the
+   * prose and the document disagree. A prompt rewritten without its citations
+   * fails here, which is the noise this rule is entitled to.
+   */
+  const REQUIRED_CITATIONS: Record<RoleName, readonly string[]> = {
+    pm: ['SDD 4.1', 'CHARTER 2.2', 'SDD 3.2', 'FR-3.4'],
+    implementer: ['FR-2.1', 'SRS 3.5', 'D-39', 'SDD 4.2', 'FR-7.1', 'TD-4', 'TD-2'],
+  };
+
+  it.each(ROLES)('cites every document section the %s prompt leans on', (role) => {
+    const prompt = sessionFor(role).options.systemPrompt as string;
+    const missing = REQUIRED_CITATIONS[role].filter((citation) => !prompt.includes(citation));
+
+    expect(missing).toEqual([]);
+  });
+
+  it('states no permission rule in either prompt', () => {
+    // FR-2.1: role permissions are enforced by configuration, not by prompt
+    // text. A prompt that also states them gives the rule a second home, and
+    // the second home is the one a model can be talked out of.
+    for (const role of ROLES) {
+      const prompt = (sessionFor(role).options.systemPrompt as string).toLowerCase();
+      expect(prompt).not.toContain('you are allowed to');
+      expect(prompt).not.toContain('permission mode');
+      expect(prompt).not.toContain('allowedtools');
+      expect(prompt).not.toContain('disallowedtools');
+    }
+  });
+});
