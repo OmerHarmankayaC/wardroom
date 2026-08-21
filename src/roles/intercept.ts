@@ -114,9 +114,7 @@ function refusal(classification: ToolCallClassification, error: unknown): SyncHo
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason:
-        `This is a ${classification.gateClass} gate and it could not be put to the owner: ${reason}. ` +
-        'The action is denied rather than taken, because a gate nobody answered is not an approval.',
+      permissionDecisionReason: `This is a ${classification.gateClass} gate and it could not be put to the owner: ${reason}. The action is denied rather than taken, because a gate nobody answered is not an approval.`,
     },
   };
 }
