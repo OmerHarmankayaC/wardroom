@@ -16,6 +16,8 @@ for (;;) {
     jobIndex: 1,
     interruptedState: null,
     attemptCount: attempt++,
+    // EXECUTING waits on no gate, so it names none (SDD §3.3, D-62).
+    gateId: null,
     headCommit: '0123456789abcdef0123456789abcdef01234567',
     updatedAt: new Date().toISOString(),
   });

@@ -1,5 +1,5 @@
 import type { GateClass } from '../gates/schema.js';
-import { type StateMarker, type TourState, writeMarker } from './marker.js';
+import { GATE_BEARING_STATES, type StateMarker, type TourState, writeMarker } from './marker.js';
 
 /**
  * The tour state machine (SDD §3.2) as a pure module. Five sequential phases
@@ -31,11 +31,20 @@ export type TourEvent =
   /** FAILED to EXECUTING while attempt_count is under the budget (FR-1.3). */
   | { readonly type: 'retry' }
   /**
-   * Into GATED, remembering the interrupted state. `tourId` is required for
-   * the dirty-tree class, which is raised before the tour exists and carries
-   * the id the tour will carry (D-36); it is meaningless elsewhere.
+   * Into GATED, remembering the interrupted state and the entry it waits on.
+   *
+   * `gateId` is required: the marker names the gate (§3.3, D-62), and a
+   * transition into GATED that does not know which entry it is waiting on
+   * produces a marker resumption cannot act on. `tourId` is required for the
+   * dirty-tree class, which is raised before the tour exists and carries the
+   * id the tour will carry (D-36); it is meaningless elsewhere.
    */
-  | { readonly type: 'raise-gate'; readonly gateClass: GateClass; readonly tourId?: string }
+  | {
+      readonly type: 'raise-gate';
+      readonly gateClass: GateClass;
+      readonly gateId: string;
+      readonly tourId?: string;
+    }
   /** GATED to PARKED: the waiting period elapsed (FR-3.3). */
   | { readonly type: 'park' }
   /**
@@ -141,6 +150,14 @@ function raiseGate(
 ): StateMarker {
   const from = marker.state;
 
+  if (event.gateId.trim() === '') {
+    throw new IllegalTransitionError(
+      from,
+      'raise-gate',
+      'the marker names the gate_id it waits on, and a GATED marker without one leaves resumption nothing to read (SDD §3.3, D-62)',
+    );
+  }
+
   if (event.gateClass === 'dirty-tree') {
     // Only at the IDLE to PLANNING transition, with the pre-tour identity the
     // §3.2 note fixes: the id the tour will carry, job 0, IDLE to return to.
@@ -159,6 +176,7 @@ function raiseGate(
       interruptedState: 'IDLE',
       tourId: event.tourId,
       jobIndex: 0,
+      gateId: event.gateId,
     });
   }
   if (from === 'IDLE') {
@@ -182,7 +200,7 @@ function raiseGate(
     throw new IllegalTransitionError(from, 'raise-gate', 'FAILED raises only the tour-budget gate');
   }
 
-  return stamped(marker, now, { state: 'GATED', interruptedState: from });
+  return stamped(marker, now, { state: 'GATED', interruptedState: from, gateId: event.gateId });
 }
 
 function decide(
@@ -255,6 +273,21 @@ function decide(
 }
 
 /**
+ * D-62's invariant, applied once to every result rather than remembered at
+ * each of the fourteen places a marker is built.
+ *
+ * A state that waits on a gate keeps whatever identifier it was given, and
+ * every other state has none: an identifier surviving a decision would point
+ * resumption at an entry the tour has stopped waiting on, which is worse than
+ * pointing it nowhere.
+ */
+function withGateRule(marker: StateMarker): StateMarker {
+  const waiting = GATE_BEARING_STATES.includes(marker.state);
+  if (waiting) return marker;
+  return marker.gateId === null ? marker : { ...marker, gateId: null };
+}
+
+/**
  * Applies one event to a marker under the §3.2 table. Pure: no clock, no
  * disk, no git. An illegal pair throws {@link IllegalTransitionError} naming
  * the transitions the state does accept.
@@ -270,7 +303,7 @@ export function transition(
   }
 
   const move = (changes: Partial<StateMarker>): Transition => ({
-    marker: stamped(marker, now, changes),
+    marker: withGateRule(stamped(marker, now, changes)),
     abandoned: false,
     exits: false,
   });
@@ -280,7 +313,11 @@ export function transition(
       if (event.tourId.trim() === '') {
         throw new IllegalTransitionError(marker.state, 'open', 'a tour opens under its id');
       }
-      return { marker: opening(marker, event.tourId, now), abandoned: false, exits: false };
+      return {
+        marker: withGateRule(opening(marker, event.tourId, now)),
+        abandoned: false,
+        exits: false,
+      };
     }
     case 'plan-complete':
       return move({ state: 'EXECUTING', jobIndex: 0 });
@@ -302,15 +339,21 @@ export function transition(
       return move({ state: 'EXECUTING' });
     }
     case 'raise-gate':
-      return { marker: raiseGate(marker, event, rules, now), abandoned: false, exits: false };
+      return {
+        marker: withGateRule(raiseGate(marker, event, rules, now)),
+        abandoned: false,
+        exits: false,
+      };
     case 'park':
       // Expiry resolves nothing: the gate entry stays pending and is stamped,
       // not the marker's business here (D-27). interrupted_state carries.
       return move({ state: 'PARKED' });
-    case 'decide':
-      return decide(marker, event, now);
+    case 'decide': {
+      const decided = decide(marker, event, now);
+      return { ...decided, marker: withGateRule(decided.marker) };
+    }
     case 'close':
-      return { marker: idle(marker, now), abandoned: false, exits: false };
+      return { marker: withGateRule(idle(marker, now)), abandoned: false, exits: false };
   }
 }
 

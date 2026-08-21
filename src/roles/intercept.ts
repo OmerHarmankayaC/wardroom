@@ -228,6 +228,10 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
       jobIndex: input.jobIndex,
       interruptedState: input.interruptedState,
       attemptCount: input.attemptCount ?? 0,
+      // The marker names the gate it waits on (§3.3, D-62); parking decides
+      // nothing, so the identifier travels with the state rather than being
+      // cleared by it.
+      gateId,
       headCommit: headCommit(input.root),
       updatedAt: now().toISOString(),
     };

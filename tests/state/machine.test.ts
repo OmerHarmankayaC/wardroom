@@ -27,11 +27,15 @@ function marker(overrides: Partial<StateMarker>): StateMarker {
     jobIndex: null,
     interruptedState: null,
     attemptCount: 0,
+    gateId: null,
     headCommit: 'abc1234',
     updatedAt: '2026-08-20T12:00:00.000Z',
     ...overrides,
   };
 }
+
+/** The entry a gated marker waits on, wherever these tests need one named. */
+const GATE_ID = 'g-20260821T090000Z-aaaa';
 
 function at(state: TourState, overrides: Partial<StateMarker> = {}): StateMarker {
   const open = state !== 'IDLE';
@@ -40,6 +44,8 @@ function at(state: TourState, overrides: Partial<StateMarker> = {}): StateMarker
     tourId: open ? 'tour-3' : null,
     jobIndex: open ? 0 : null,
     interruptedState: state === 'GATED' || state === 'PARKED' ? 'EXECUTING' : null,
+    // The marker names the gate it waits on, and only then (SDD §3.3, D-62).
+    gateId: state === 'GATED' || state === 'PARKED' ? GATE_ID : null,
     ...overrides,
   });
 }
@@ -109,6 +115,7 @@ describe('raising a gate', () => {
   it('remembers the state it interrupted', () => {
     const result = step(at('EXECUTING', { jobIndex: 2 }), {
       type: 'raise-gate',
+      gateId: GATE_ID,
       gateClass: 'scope-change',
     });
 
@@ -120,6 +127,7 @@ describe('raising a gate', () => {
   it('raises the dirty-tree gate from IDLE with the id the tour will carry (D-36)', () => {
     const result = step(at('IDLE'), {
       type: 'raise-gate',
+      gateId: GATE_ID,
       gateClass: 'dirty-tree',
       tourId: 'tour-3',
     });
@@ -140,6 +148,7 @@ describe('raising a gate', () => {
 
     const gated = step(at('IDLE', { attemptCount: 2 }), {
       type: 'raise-gate',
+      gateId: GATE_ID,
       gateClass: 'dirty-tree',
       tourId: 'tour-3',
     });
@@ -153,20 +162,26 @@ describe('raising a gate', () => {
   });
 
   it('refuses a dirty-tree gate without the tour id it will carry', () => {
-    expect(() => step(at('IDLE'), { type: 'raise-gate', gateClass: 'dirty-tree' })).toThrow(
-      /tour id/,
-    );
+    expect(() =>
+      step(at('IDLE'), { type: 'raise-gate', gateId: GATE_ID, gateClass: 'dirty-tree' }),
+    ).toThrow(/tour id/);
   });
 
   it('refuses the dirty-tree class anywhere but IDLE', () => {
     expect(() =>
-      step(at('PLANNING'), { type: 'raise-gate', gateClass: 'dirty-tree', tourId: 'tour-3' }),
+      step(at('PLANNING'), {
+        type: 'raise-gate',
+        gateId: GATE_ID,
+        gateClass: 'dirty-tree',
+        tourId: 'tour-3',
+      }),
     ).toThrow(IllegalTransitionError);
   });
 
   it('raises the tour-budget gate from FAILED once the budget is spent (FR-1.3)', () => {
     const result = step(at('FAILED', { attemptCount: 3 }), {
       type: 'raise-gate',
+      gateId: GATE_ID,
       gateClass: 'tour-budget',
     });
 
@@ -176,7 +191,11 @@ describe('raising a gate', () => {
 
   it('refuses a tour-budget gate while the budget still holds', () => {
     expect(() =>
-      step(at('FAILED', { attemptCount: 2 }), { type: 'raise-gate', gateClass: 'tour-budget' }),
+      step(at('FAILED', { attemptCount: 2 }), {
+        type: 'raise-gate',
+        gateId: GATE_ID,
+        gateClass: 'tour-budget',
+      }),
     ).toThrow(/budget/);
   });
 
@@ -185,9 +204,9 @@ describe('raising a gate', () => {
   });
 
   it('refuses the tour-budget class anywhere but FAILED', () => {
-    expect(() => step(at('EXECUTING'), { type: 'raise-gate', gateClass: 'tour-budget' })).toThrow(
-      IllegalTransitionError,
-    );
+    expect(() =>
+      step(at('EXECUTING'), { type: 'raise-gate', gateId: GATE_ID, gateClass: 'tour-budget' }),
+    ).toThrow(IllegalTransitionError);
   });
 
   it('refuses every class but tour-budget at FAILED', () => {
@@ -195,7 +214,11 @@ describe('raising a gate', () => {
     // tour-budget gate at budget exhaustion; a scope-change gate raised from
     // FAILED would be a route the table does not carry.
     expect(() =>
-      step(at('FAILED', { attemptCount: 1 }), { type: 'raise-gate', gateClass: 'scope-change' }),
+      step(at('FAILED', { attemptCount: 1 }), {
+        type: 'raise-gate',
+        gateId: GATE_ID,
+        gateClass: 'scope-change',
+      }),
     ).toThrow(/only the tour-budget gate/);
   });
 
@@ -203,17 +226,17 @@ describe('raising a gate', () => {
     // The converse of the dirty-tree guard. IDLE has one route into GATED and
     // it is D-36's; a push gate raised before a tour exists would carry an
     // interrupted_state the table never gives it.
-    expect(() => step(at('IDLE'), { type: 'raise-gate', gateClass: 'push' })).toThrow(
-      /only dirty-tree is raised at IDLE/,
-    );
+    expect(() =>
+      step(at('IDLE'), { type: 'raise-gate', gateId: GATE_ID, gateClass: 'push' }),
+    ).toThrow(/only dirty-tree is raised at IDLE/);
   });
 
   it('refuses a second gate while one is pending (D-14)', () => {
     // The orchestrator blocks on the gate it raised; nothing exists to raise
     // another. GATED accepts a decision or a park and nothing else.
-    expect(() => step(at('GATED'), { type: 'raise-gate', gateClass: 'push' })).toThrow(
-      IllegalTransitionError,
-    );
+    expect(() =>
+      step(at('GATED'), { type: 'raise-gate', gateId: GATE_ID, gateClass: 'push' }),
+    ).toThrow(IllegalTransitionError);
   });
 });
 
@@ -221,6 +244,7 @@ describe('interrupted_state survives the gate round trips', () => {
   it('carries through GATED and back on approval', () => {
     const gated = step(at('EXECUTING', { jobIndex: 3 }), {
       type: 'raise-gate',
+      gateId: GATE_ID,
       gateClass: 'secrets',
     });
     const resumed = step(gated.marker, { type: 'decide', gateClass: 'secrets', approved: true });
@@ -231,7 +255,11 @@ describe('interrupted_state survives the gate round trips', () => {
   });
 
   it('carries through GATED, PARKED and back, however long the park lasted', () => {
-    const gated = step(at('CLOSING'), { type: 'raise-gate', gateClass: 'scope-change' });
+    const gated = step(at('CLOSING'), {
+      type: 'raise-gate',
+      gateId: GATE_ID,
+      gateClass: 'scope-change',
+    });
     const parked = step(gated.marker, { type: 'park' });
 
     expect(parked.marker.state).toBe('PARKED');
@@ -250,7 +278,11 @@ describe('interrupted_state survives the gate round trips', () => {
   });
 
   it('returns a general rejection to interrupted_state, for the loop to record as a job', () => {
-    const gated = step(at('EXECUTING'), { type: 'raise-gate', gateClass: 'scope-change' });
+    const gated = step(at('EXECUTING'), {
+      type: 'raise-gate',
+      gateId: GATE_ID,
+      gateClass: 'scope-change',
+    });
     const resumed = step(gated.marker, {
       type: 'decide',
       gateClass: 'scope-change',
@@ -340,7 +372,11 @@ describe('the attempt_count lifecycle belongs to the tour (SDD §3.2)', () => {
 
     // Without the close-time clearing, the next tour would exhaust a budget it
     // never spent.
-    const gated = step(failed.marker, { type: 'raise-gate', gateClass: 'tour-budget' });
+    const gated = step(failed.marker, {
+      type: 'raise-gate',
+      gateId: GATE_ID,
+      gateClass: 'tour-budget',
+    });
     const closing = step(gated.marker, {
       type: 'decide',
       gateClass: 'tour-budget',
@@ -360,7 +396,7 @@ describe('an illegal transition is refused naming the expected ones', () => {
     green: { type: 'green' },
     'verification-failed': { type: 'verification-failed' },
     retry: { type: 'retry' },
-    'raise-gate': { type: 'raise-gate', gateClass: 'scope-change' },
+    'raise-gate': { type: 'raise-gate', gateId: GATE_ID, gateClass: 'scope-change' },
     park: { type: 'park' },
     decide: { type: 'decide', gateClass: 'scope-change', approved: true },
     close: { type: 'close' },

@@ -28,6 +28,7 @@ const marker: StateMarker = {
   jobIndex: 2,
   interruptedState: null,
   attemptCount: 0,
+  gateId: null,
   headCommit: 'a'.repeat(40),
   updatedAt: '2026-08-20T09:00:00.000Z',
 };
@@ -52,6 +53,7 @@ describe('writeMarker', () => {
 
     expect(Object.keys(onDisk).sort()).toEqual([
       'attempt_count',
+      'gate_id',
       'head_commit',
       'interrupted_state',
       'job_index',

@@ -2,8 +2,8 @@ import { renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../config/load.js';
 import { ensureRunDir, wardroomPaths } from '../config/paths.js';
-import { list } from '../gates/queue.js';
 import type { GateEntry } from '../gates/schema.js';
+import { readEntry } from '../gates/store.js';
 import { headCommit, isWorkingTreeDirty } from './git.js';
 import {
   GATE_BEARING_STATES,
@@ -89,38 +89,19 @@ function preserve(root: string, now: Date): string {
 /**
  * The gate a gated or parked state is waiting on, or null.
  *
- * The marker does not name a gate identifier and is not going to: adding one
- * would put the same fact in two files, and the entry is the durable record
- * (TD-3). So the gate is found in the queue instead.
+ * Read from the marker, which names it (§3.3, D-62). The directory scan this
+ * replaces could not supply it and was wrong in two ways at once: entries are
+ * never archived (D-29) so the directory accumulates, and a decided entry may
+ * still carry an unconsumed authorization (D-61), so "the pending one" is not
+ * unique and "the newest one" is not necessarily the one this tour waits on.
  *
- * A pending entry wins outright: the orchestrator blocks on the gate it raised
- * and one process runs one project, so at most one is pending (SDD §3.2, D-14).
- * Only when none is pending, which is the D-38 case where the owner answered
- * while the process was down, does this fall back to the most recently raised.
- *
- * That fallback compares `requested_at`, not the identifier. `gate_id` carries
- * a timestamp compacted to whole seconds followed by four hex characters of
- * randomness (D-28), so two gates raised inside the same second sort by their
- * randomness rather than by their order, and resolved entries stay in the
- * directory (D-29) where they can win that comparison. Sorting by name is
- * sorting by the order gates were raised only at second resolution, which is
- * exactly the resolution this needs to be finer than.
+ * Null where the marker names a gate the queue does not hold. That is not the
+ * same answer as a state that waits on nothing, and the caller is told which
+ * it got.
  */
-function gateFor(root: string, state: TourState): GateEntry | null {
-  if (!GATE_BEARING_STATES.includes(state)) return null;
-
-  const entries = list(root, { includeResolved: true });
-  if (entries.length === 0) return null;
-
-  const pending = entries.filter((entry) => entry.status === 'pending');
-  const candidates = pending.length > 0 ? pending : entries;
-
-  return candidates.reduce((latest, entry) =>
-    entry.requestedAt > latest.requestedAt ||
-    (entry.requestedAt === latest.requestedAt && entry.gateId > latest.gateId)
-      ? entry
-      : latest,
-  );
+function gateFor(root: string, marker: StateMarker): GateEntry | null {
+  if (!GATE_BEARING_STATES.includes(marker.state) || marker.gateId === null) return null;
+  return readEntry(root, marker.gateId);
 }
 
 /** SDD §4.4 step 4: what each state resumes as. */
@@ -224,6 +205,7 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
         jobIndex: null,
         interruptedState: null,
         attemptCount: 0,
+        gateId: null,
         headCommit: head,
         updatedAt: now.toISOString(),
       },
@@ -254,14 +236,15 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
     );
   }
 
-  const gate = gateFor(root, marker.state);
+  const gate = gateFor(root, marker);
   if (GATE_BEARING_STATES.includes(marker.state) && gate === null) {
     events.push(
       [
-        `The marker reads ${marker.state} but the gate queue holds no gate entry, so there is`,
-        'nothing to re-present. The entry is the durable record of a pending decision (TD-3)',
-        'and it outlives the process by design, so its absence is evidence of a defect',
-        'somewhere else rather than of a tour that was never gated.',
+        `The marker reads ${marker.state} and names gate ${marker.gateId ?? 'nothing'}, which the`,
+        'queue does not hold, so there is nothing to re-present. The entry is the durable',
+        'record of a pending decision (TD-3) and it outlives the process by design, so its',
+        'absence is evidence of a defect somewhere else rather than of a tour that was never',
+        'gated.',
       ].join(' '),
     );
   }
@@ -293,6 +276,7 @@ function reconstructed(head: string | null, now: Date): StateMarker {
     jobIndex: null,
     interruptedState: null,
     attemptCount: 0,
+    gateId: null,
     headCommit: head,
     updatedAt: now.toISOString(),
   };

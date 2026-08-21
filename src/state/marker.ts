@@ -41,8 +41,18 @@ export interface StateMarker {
   readonly jobIndex: number | null;
   /** The state to return to once a gate is decided (SDD §3.2). */
   readonly interruptedState: TourState | null;
-  /** Failed verification attempts so far (FR-1.3). */
+  /** Failed verification attempts so far, over the cycle (FR-1.3, D-60). */
   readonly attemptCount: number;
+  /**
+   * The gate entry this tour is waiting on (SDD §3.3, D-62). Mandatory in
+   * `GATED` and `PARKED`, null everywhere else.
+   *
+   * The marker names it because a scan of the gates directory cannot supply
+   * it: entries are never archived (D-29) so the directory accumulates, and a
+   * decided entry may still carry an unconsumed authorization (D-61), so
+   * neither "the pending one" nor "the newest one" identifies it.
+   */
+  readonly gateId: string | null;
   readonly headCommit: string | null;
   readonly updatedAt: string;
 }
@@ -63,6 +73,7 @@ interface OnDiskMarker {
   job_index: number | null;
   interrupted_state: string | null;
   attempt_count: number;
+  gate_id: string | null;
   head_commit: string | null;
   updated_at: string;
 }
@@ -74,6 +85,7 @@ function toOnDisk(marker: StateMarker): OnDiskMarker {
     job_index: marker.jobIndex,
     interrupted_state: marker.interruptedState,
     attempt_count: marker.attemptCount,
+    gate_id: marker.gateId,
     head_commit: marker.headCommit,
     updated_at: marker.updatedAt,
   };
@@ -121,12 +133,25 @@ function schemaProblem(raw: unknown): string | null {
   if (!Number.isInteger(record.attempt_count) || (record.attempt_count as number) < 0) {
     return 'attempt_count must be a non-negative whole number';
   }
+  if (!isOptionalString(record.gate_id)) return 'gate_id must be a string or null';
   if (!isOptionalString(record.head_commit)) return 'head_commit must be a string or null';
   if (typeof record.updated_at !== 'string' || record.updated_at === '') {
     return 'updated_at must be a timestamp';
   }
   if (GATE_BEARING_STATES.includes(record.state) && record.interrupted_state === null) {
     return `${record.state} must carry the interrupted_state it returns to (SDD §3.2)`;
+  }
+
+  // D-62, both directions. A gate-bearing state with no identifier leaves
+  // resumption with nothing to read; an identifier on any other state points
+  // at an entry the tour is not waiting on, which sends resumption somewhere
+  // worse than nowhere.
+  const waiting = GATE_BEARING_STATES.includes(record.state);
+  if (waiting && (record.gate_id === null || (record.gate_id as string).trim() === '')) {
+    return `${record.state} must carry the gate_id it waits on (SDD §3.3, D-62)`;
+  }
+  if (!waiting && record.gate_id !== null) {
+    return `gate_id is null outside ${GATE_BEARING_STATES.join(' and ')}, and ${record.state} carries ${JSON.stringify(record.gate_id)} (SDD §3.3, D-62)`;
   }
   return null;
 }
@@ -168,6 +193,7 @@ export function readMarker(root: string): MarkerRead {
       jobIndex: record.job_index,
       interruptedState: record.interrupted_state as TourState | null,
       attemptCount: record.attempt_count,
+      gateId: record.gate_id,
       headCommit: record.head_commit,
       updatedAt: record.updated_at,
     },

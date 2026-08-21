@@ -75,6 +75,9 @@ function markerFor(state: TourState, overrides: Partial<StateMarker> = {}): Stat
     jobIndex: 1,
     interruptedState: state === 'GATED' || state === 'PARKED' ? 'EXECUTING' : null,
     attemptCount: state === 'FAILED' ? 1 : 0,
+    // A gate-bearing marker names the entry it waits on (SDD §3.3, D-62).
+    // The default names one the queue does not hold, which is its own case.
+    gateId: state === 'GATED' || state === 'PARKED' ? 'g-20260821T090000Z-none' : null,
     headCommit: head(),
     updatedAt: '2026-08-20T09:00:00.000Z',
   };
@@ -347,7 +350,7 @@ function raiseGate(at?: Date): string {
 describe('a gate decided while the process was down', () => {
   it.each(['GATED', 'PARKED'] as const)('re-presents a still-pending gate from %s', (state) => {
     const gateId = raiseGate();
-    given(state);
+    given(state, { gateId });
 
     const result = resume(root);
 
@@ -359,7 +362,7 @@ describe('a gate decided while the process was down', () => {
   it('re-presents a gate that was parked long ago, never approving it by age', () => {
     const gateId = raiseGate();
     park(root, gateId);
-    given('PARKED');
+    given('PARKED', { gateId });
 
     const result = resume(root);
 
@@ -371,7 +374,7 @@ describe('a gate decided while the process was down', () => {
   it('applies an approval recorded while nobody was listening', () => {
     const gateId = raiseGate();
     decide(root, gateId, 'approved', 'owner');
-    given('PARKED');
+    given('PARKED', { gateId });
 
     const result = resume(root);
 
@@ -383,7 +386,7 @@ describe('a gate decided while the process was down', () => {
   it('applies a rejection the same way, so the class rejection path can run', () => {
     const gateId = raiseGate();
     decide(root, gateId, 'rejected', 'owner', 'not yet');
-    given('GATED');
+    given('GATED', { gateId });
 
     const result = resume(root);
 
@@ -392,38 +395,39 @@ describe('a gate decided while the process was down', () => {
     expect(result.gate?.decisionNote).toBe('not yet');
   });
 
-  it('reads the pending gate, not whichever entry happens to sort last', () => {
-    // Both are raised inside the same second, so their identifiers sort by
-    // their four random characters rather than by the order they were raised
-    // (D-28). The pending one is the gate the state hangs on either way.
+  it('reads the gate the marker names, not whichever entry sorts last', () => {
+    // The directory scan this replaces could not answer here (D-62): both
+    // entries are raised inside the same second, so their identifiers sort by
+    // their four random characters rather than by order, and a decided entry
+    // stays in the directory (D-29) where it can win that comparison. The
+    // marker names the one this tour waits on and the ambiguity goes away.
     const sameSecond = new Date('2026-08-21T09:00:00.000Z');
     const settled = raiseGate(sameSecond);
     decide(root, settled, 'approved', 'owner');
     const waiting = raiseGate(sameSecond);
-    given('GATED');
+    given('GATED', { gateId: waiting });
 
     expect(resume(root).gate?.gateId).toBe(waiting);
     expect(resume(root).nextAction).toBe('REPRESENT_GATE');
   });
 
-  it('falls back to the most recently raised when none is pending', () => {
+  it('reads the older entry when that is the one the marker names', () => {
+    // The mutation this exists for: falling back to the newest entry would
+    // answer with the second gate here, which this tour is not waiting on.
     const older = raiseGate(new Date('2026-08-21T09:00:00.000Z'));
-    decide(root, older, 'rejected', 'owner');
-    const newer = raiseGate(new Date('2026-08-21T09:00:05.000Z'));
-    decide(root, newer, 'approved', 'owner');
-    given('PARKED');
+    raiseGate(new Date('2026-08-21T09:00:05.000Z'));
+    given('PARKED', { gateId: older });
 
-    expect(resume(root).gate?.gateId).toBe(newer);
-    expect(resume(root).nextAction).toBe('APPLY_GATE_DECISION');
+    expect(resume(root).gate?.gateId).toBe(older);
   });
 
-  it('says so when the marker claims a gate the queue does not have', () => {
+  it('says so when the marker names a gate the queue does not have', () => {
     given('GATED');
 
     const result = resume(root);
 
     expect(result.gate).toBeNull();
-    expect(result.events.join('\n')).toMatch(/no gate entry/i);
+    expect(result.events.join('\n')).toMatch(/queue does not hold/i);
   });
 
   it('consults no gate for a state that is not waiting on one', () => {
