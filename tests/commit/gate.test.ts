@@ -365,6 +365,60 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
   });
 });
 
+describe('a deleted version-carrying document blocks the commit (D-40)', () => {
+  it('blocks a staged deletion against a tracked document root', () => {
+    // The skip this replaces was worse than it looks: a deleted file has no
+    // version and no content to compare, so the check reported clean, and the
+    // one edit that removes a canonical document entirely was the one edit it
+    // let past (SRS FR-6.1, SDD §4.5).
+    const config = withTrackedDocuments('1.3');
+    git('rm', '-q', join(TRACKED_DOCS, 'SRS.md'));
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: stagedSrs(TRACKED_DOCS),
+      occasion: boundary,
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toContain('SRS.md');
+    expect(verdict.blocks.join('\n')).toMatch(/delet/i);
+  });
+
+  it('blocks a staged deletion against a recorded baseline', () => {
+    const config = withUntrackedDocuments('1.3');
+    rmSync(join(root, UNTRACKED_DOCS, 'SRS.md'));
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: stagedSrs(UNTRACKED_DOCS),
+      occasion: boundary,
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toContain('SRS.md');
+  });
+
+  it('does not block a document that was never there to delete', () => {
+    // A document the level names, absent from the staged set entirely, is not
+    // a deletion: nothing about it is being committed.
+    const config = withTrackedDocuments('1.3');
+
+    const verdict = checkCommit(root, config, { stagedPaths: [], occasion: boundary });
+
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('does not block PROGRESS, which the level leaves outside the set', () => {
+    const config = withTrackedDocuments('1.3');
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [join(TRACKED_DOCS, 'PROGRESS.md')],
+      occasion: boundary,
+    });
+
+    expect(verdict.allowed).toBe(true);
+  });
+});
+
 describe('the occasion (FR-7.1)', () => {
   it('allows a job boundary that passed and is green', () => {
     const config = withTrackedDocuments('1.3');

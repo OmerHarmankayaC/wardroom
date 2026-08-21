@@ -295,6 +295,15 @@ describe("the staged set the gate judges is the repository's, not the call's", (
     expect(reason(output)).toMatch(/SRS\.md/);
   });
 
+  it('denies a staged deletion of a version-carrying document', async () => {
+    git('rm', '-q', join(DOC_ROOT, 'SRS.md'));
+
+    const output = await call('git commit -m "docs: remove SRS"');
+
+    expect(permission(output)).toBe('deny');
+    expect(reason(output)).toMatch(/SRS\.md/);
+  });
+
   it('allows the same edit once the version and its row move with it', async () => {
     write(join(DOC_ROOT, 'SRS.md'), srs('1.1', '## 1. Overview, rewritten'));
     git('add', '-A');

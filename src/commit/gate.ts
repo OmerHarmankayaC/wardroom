@@ -261,9 +261,20 @@ function checkDocuments(
     try {
       contents = readFileSync(join(root, path), 'utf8');
     } catch {
-      // Staged but unreadable is a deletion or a rename, neither of which the
-      // version rule speaks to. The commit is not blocked on a document that
-      // is not there to have a version.
+      // Staged and no longer on disk: the staged set deletes this document, or
+      // renames it away, which comes to the same thing for the path the level
+      // names (D-40).
+      //
+      // Blocked, not skipped. A deleted file has no version and no content to
+      // compare, so the comparison has nothing to run on: skipping made the
+      // check report clean, which meant the one edit that removes a canonical
+      // document entirely was the one edit it let past. The document set is
+      // fixed by the project's level (SRS §3.2), so a deletion either
+      // contradicts the contract or follows a level change, and a level change
+      // is a scope change with its own gate.
+      blocks.push(
+        `${name}: the staged set deletes it. It is version-carrying at the ${config.level} level (SRS §3.2), which fixes the document set, so removing it either contradicts the contract or follows a level change, and a level change is a scope change with its own gate (FR-6.1, D-40).`,
+      );
       continue;
     }
 
