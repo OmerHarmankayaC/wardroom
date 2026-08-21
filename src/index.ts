@@ -258,3 +258,25 @@ export {
   driveFailed,
   driveVerifying,
 } from './loop/verifying.js';
+export { TOUR_DISPOSITIONS, type TourDisposition } from './state/marker.js';
+export type { ClosureOccasion } from './commit/gate.js';
+export { commitExists, isAncestorOf, remoteCarries } from './state/git.js';
+export {
+  type ClosingReport,
+  type ReportedDebt,
+  type ReportedJob,
+  ReportSchemaError,
+  readReport,
+  renderReport,
+  reportPath,
+  writeReport,
+} from './state/report.js';
+export { appendPending, tourLogPath } from './loop/tour-log.js';
+export { assertDrivenState } from './loop/state-guard.js';
+export {
+  type ClaimCheck,
+  type ClosingResult,
+  type ClosingSession,
+  type DriveClosingInput,
+  driveClosing,
+} from './loop/closing.js';

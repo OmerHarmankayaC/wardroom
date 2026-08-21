@@ -365,6 +365,99 @@ describe('document integrity against an untracked document root (BACKLOG D-30)',
   });
 });
 
+describe('the closure occasion (FR-7.1, D-76)', () => {
+  const closure = {
+    kind: 'closure' as const,
+    tourId: 'tour-9',
+    state: 'CLOSING' as const,
+    disposition: 'closed' as const,
+  };
+
+  it('accepts the one commit a tour closes with', () => {
+    const config = withTrackedDocuments('1.3');
+
+    const verdict = checkCommit(root, config, { stagedPaths: [], occasion: closure });
+
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('is the only occasion whose staged set may carry the document root', () => {
+    // Closure carries the version bumps FR-6.1 checks. As FR-7.1 was written
+    // before D-76, the gate would have blocked the one commit of a tour whose
+    // whole purpose is the integrity check the gate performs.
+    const config = withTrackedDocuments('1.3');
+    write(join(TRACKED_DOCS, 'SRS.md'), srs('1.4', '## 1. Overview, rewritten'));
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: stagedSrs(TRACKED_DOCS),
+      occasion: closure,
+    });
+
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('still checks the documents it carries', () => {
+    // Accepting the occasion is not accepting the contents. A closure commit
+    // whose document moved without its version is the exact failure FR-6.1
+    // exists for, arriving at the one commit that carries documents.
+    const config = withTrackedDocuments('1.3');
+    write(join(TRACKED_DOCS, 'SRS.md'), srs('1.3', '## 1. Overview, rewritten'));
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: stagedSrs(TRACKED_DOCS),
+      occasion: closure,
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toContain('SRS.md');
+  });
+
+  it('refuses the occasion anywhere but CLOSING', () => {
+    const config = withTrackedDocuments('1.3');
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [],
+      occasion: { ...closure, state: 'EXECUTING' },
+    });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toMatch(/CLOSING/);
+  });
+
+  it('runs no green definition, because the tour was verified before it got here', () => {
+    // An abandoned closure is the closure of a tour that could not go green
+    // (D-35), so requiring green here would forbid the closure the disposition
+    // exists for.
+    let ran = 0;
+    const verdict = checkCommit(
+      root,
+      withTrackedDocuments('1.3'),
+      { stagedPaths: [], occasion: { ...closure, disposition: 'abandoned' } },
+      {
+        runVerification: () => {
+          ran += 1;
+          return { kind: 'green', ran: [] };
+        },
+      },
+    );
+
+    expect(ran).toBe(0);
+    expect(verdict.greenSource).toBe('not-required');
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('names the three occasions when it refuses one that is none of them', () => {
+    const verdict = checkCommit(root, withTrackedDocuments('1.3'), {
+      stagedPaths: [],
+      occasion: { kind: 'checkpoint' },
+    });
+
+    expect(verdict.blocks.join('\n')).toMatch(/job-boundary/);
+    expect(verdict.blocks.join('\n')).toMatch(/closure/);
+    expect(verdict.blocks.join('\n')).toMatch(/wip-stop/);
+  });
+});
+
 describe('a deleted version-carrying document blocks the commit (D-40)', () => {
   it('blocks a staged deletion against a tracked document root', () => {
     // The skip this replaces was worse than it looks: a deleted file has no

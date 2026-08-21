@@ -2,6 +2,7 @@ import type { ProjectConfig } from '../config/schema.js';
 import { type OpenTourBlock, type TourJob, readOpenTour } from '../progress/open-tour.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker } from '../state/marker.js';
+import { assertDrivenState } from './state-guard.js';
 
 /**
  * The `EXECUTING` drive (SDD §4.2, §3.2).
@@ -91,11 +92,7 @@ export class JobDidNotAdvanceError extends Error {
  * without ever raising the gate that bounds it.
  */
 export async function driveExecuting(input: DriveExecutingInput): Promise<DriveResult> {
-  if (input.marker.state !== 'EXECUTING') {
-    throw new Error(
-      `the EXECUTING drive was entered from ${input.marker.state}. It drives one state and does not decide which state that is (SDD §3.2).`,
-    );
-  }
+  assertDrivenState(input.marker, 'EXECUTING');
 
   const read = readOpenTour(input.root, input.config.docRoot);
   if (read.kind === 'none') {

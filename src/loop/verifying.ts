@@ -9,6 +9,7 @@ import {
 import { advance } from '../state/machine.js';
 import type { StateMarker } from '../state/marker.js';
 import { type VerifyRunner, runVerification } from '../verify/run.js';
+import { assertDrivenState } from './state-guard.js';
 
 /**
  * `VERIFYING` and `FAILED` (SDD §3.2, §4.3, §4.4 step 4).
@@ -50,11 +51,7 @@ export type VerifyingResult =
  * attempt at a time on a question only the owner can answer (D-71).
  */
 export function driveVerifying(input: DriveVerifyingInput): VerifyingResult {
-  if (input.marker.state !== 'VERIFYING') {
-    throw new Error(
-      `the VERIFYING drive was entered from ${input.marker.state}. It drives one state and does not decide which state that is (SDD §3.2).`,
-    );
-  }
+  assertDrivenState(input.marker, 'VERIFYING');
 
   const now = (input.now ?? (() => new Date()))();
   const rules = { attemptBudget: input.config.attemptBudget };

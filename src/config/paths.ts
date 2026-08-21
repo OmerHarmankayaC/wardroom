@@ -32,6 +32,8 @@ export interface WardroomPaths {
   readonly lastFailureFile: string;
   /** The token and cost record, append-only (SDD §3.0, NFR-4, D-74). */
   readonly usageLog: string;
+  /** One closing report per tour, which closure reads (SDD §3.0, §4.6, D-73). */
+  readonly reportsDir: string;
   readonly gatesDir: string;
   readonly auditLog: string;
 }
@@ -50,6 +52,7 @@ export function wardroomPaths(root: string): WardroomPaths {
     docBaselineFile: join(runDir, 'doc-baseline.json'),
     lastFailureFile: join(runDir, 'last-failure.json'),
     usageLog: join(runDir, 'usage.jsonl'),
+    reportsDir: join(runDir, 'reports'),
     gatesDir,
     auditLog: join(gatesDir, 'audit.jsonl'),
   };

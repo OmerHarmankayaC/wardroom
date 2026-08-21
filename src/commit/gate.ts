@@ -9,6 +9,7 @@ import {
   versionCarryingDocuments,
 } from '../documents/set.js';
 import { currentBranch, fileAtHead, headSubject, isPathTracked } from '../state/git.js';
+import { TOUR_DISPOSITIONS, type TourDisposition, type TourState } from '../state/marker.js';
 import { type VerifyRunner, runVerification } from '../verify/run.js';
 
 /**
@@ -35,7 +36,7 @@ import { type VerifyRunner, runVerification } from '../verify/run.js';
  * squashing would rewrite history, which is the owner's operation and never
  * Wardroom's (SDD §4.5).
  */
-export const COMMIT_OCCASIONS = ['job-boundary', 'wip-stop'] as const;
+export const COMMIT_OCCASIONS = ['job-boundary', 'closure', 'wip-stop'] as const;
 export type CommitOccasionKind = (typeof COMMIT_OCCASIONS)[number];
 
 /** How a WIP stop announces itself in the log, so a second one can be seen. */
@@ -64,6 +65,29 @@ export interface JobBoundaryOccasion {
   readonly verificationGreen: boolean;
 }
 
+/**
+ * The one commit a tour closes with (FR-7.1, D-76, SDD §4.6 step 8).
+ *
+ * The only occasion whose staged set may touch the document root, and the
+ * commit that carries the version bumps FR-6.1 checks. Accepting the occasion
+ * is not accepting the contents: the document check runs over it exactly as it
+ * runs over any other staged set, which is the whole reason this commit is the
+ * one that carries documents.
+ */
+export interface ClosureOccasion {
+  readonly kind: 'closure';
+  readonly tourId: string;
+  /**
+   * The state the orchestrator is in. The gate accepts this occasion only in
+   * `CLOSING`: a closure commit from anywhere else is a tour committing its
+   * documents without having gone through the procedure that settles them
+   * (§4.6).
+   */
+  readonly state: TourState;
+  /** Closed, abandoned (D-35) or carried (D-66). Three and no more (§3.2). */
+  readonly disposition: TourDisposition;
+}
+
 export interface WipStopOccasion {
   readonly kind: 'wip-stop';
   /** Why the tour is stopping with work unfinished, for the commit message. */
@@ -75,7 +99,11 @@ export interface OtherOccasion {
   readonly kind: string;
 }
 
-export type CommitOccasion = JobBoundaryOccasion | WipStopOccasion | OtherOccasion;
+export type CommitOccasion =
+  | JobBoundaryOccasion
+  | ClosureOccasion
+  | WipStopOccasion
+  | OtherOccasion;
 
 export interface CommitRequest {
   /** Repository-relative paths in the staged set. */
@@ -121,12 +149,16 @@ function isJobBoundary(occasion: CommitOccasion): occasion is JobBoundaryOccasio
   return occasion.kind === COMMIT_OCCASIONS[0];
 }
 
-function isWipStop(occasion: CommitOccasion): occasion is WipStopOccasion {
+function isClosure(occasion: CommitOccasion): occasion is ClosureOccasion {
   return occasion.kind === COMMIT_OCCASIONS[1];
 }
 
+function isWipStop(occasion: CommitOccasion): occasion is WipStopOccasion {
+  return occasion.kind === COMMIT_OCCASIONS[2];
+}
+
 /** Stated from COMMIT_OCCASIONS, so the list and the refusal cannot drift apart. */
-const EXPECTED = `Wardroom commits on ${COMMIT_OCCASIONS.length} occasions and no others: at a job boundary (${COMMIT_OCCASIONS[0]}), with the acceptance criterion passed and the work green, or once as a WIP commit when stopping with unfinished work (${COMMIT_OCCASIONS[1]}). FR-7.1, BACKLOG D-26`;
+const EXPECTED = `Wardroom commits on ${COMMIT_OCCASIONS.length} occasions and no others: at a job boundary (${COMMIT_OCCASIONS[0]}), with the acceptance criterion passed and the work green; at the closure of a tour (${COMMIT_OCCASIONS[1]}), carrying the documents, the tour log and the cleared open-tour block; or once as a WIP commit when stopping with unfinished work (${COMMIT_OCCASIONS[2]}). FR-7.1, BACKLOG D-26, D-76`;
 
 /**
  * FR-7.1's second occasion is a single WIP commit on a branch other than
@@ -194,6 +226,24 @@ function checkOccasion(
     }
     checkGreen(root, config, runner, occasion, blocks);
     return 'run';
+  }
+
+  if (isClosure(occasion)) {
+    // No green run. The tour was verified before it reached CLOSING, and an
+    // abandoned closure is the closure of a tour that could not go green
+    // (D-35), so requiring it here would forbid the closure that disposition
+    // exists for.
+    if (occasion.state !== 'CLOSING') {
+      blocks.push(
+        `occasion: a closure commit is created in CLOSING, and the orchestrator is in ${occasion.state}. A tour committing its documents from anywhere else has not been through the procedure that settles them (SDD §4.6, D-76).`,
+      );
+    }
+    if (!TOUR_DISPOSITIONS.includes(occasion.disposition)) {
+      blocks.push(
+        `occasion: ${JSON.stringify(occasion.disposition)} is not a disposition. A closure records one of ${TOUR_DISPOSITIONS.join(', ')} and no more (SDD §3.2, D-35, D-66).`,
+      );
+    }
+    return 'not-required';
   }
 
   if (isWipStop(occasion)) {

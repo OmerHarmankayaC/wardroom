@@ -35,6 +35,18 @@ export type TourState = (typeof TOUR_STATES)[number];
  */
 export const GATE_BEARING_STATES: readonly TourState[] = ['GATED', 'PARKED'];
 
+/**
+ * The three dispositions a closure records, and no more (SDD §3.2).
+ *
+ * `abandoned` is a tour that could not go green (D-35); `carried` is one the
+ * usage ceiling ended at a job boundary (D-66) and is not a failure, so it
+ * must not travel the abandonment path. Stated beside the states because it is
+ * the same section's fact, and the commit gate and the closure drive both read
+ * it from here rather than one of them from the other.
+ */
+export const TOUR_DISPOSITIONS = ['closed', 'abandoned', 'carried'] as const;
+export type TourDisposition = (typeof TOUR_DISPOSITIONS)[number];
+
 export interface StateMarker {
   readonly state: TourState;
   readonly tourId: string | null;

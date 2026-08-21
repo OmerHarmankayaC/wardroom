@@ -28,6 +28,7 @@ describe('wardroomPaths', () => {
       stateFile: join(root, '.wardroom', 'run', 'state.json'),
       lastFailureFile: join(root, '.wardroom', 'run', 'last-failure.json'),
       usageLog: join(root, '.wardroom', 'run', 'usage.jsonl'),
+      reportsDir: join(root, '.wardroom', 'run', 'reports'),
       // Added by SDD 1.4 §3.0 (BACKLOG D-30): the closure baseline FR-6.1
       // compares against where the document root is untracked. It is a
       // derived record, rebuildable at any closed boundary, which is why it

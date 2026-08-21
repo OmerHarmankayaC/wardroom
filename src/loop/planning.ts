@@ -9,6 +9,7 @@ import {
 } from '../state/last-failure.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker } from '../state/marker.js';
+import { assertDrivenState } from './state-guard.js';
 
 /**
  * The `PLANNING` drive (SDD §3.2, §4.1, §4.4 step 4).
@@ -76,11 +77,7 @@ export type PlanningResult =
  * run loop's to apply.
  */
 export async function drivePlanning(input: DrivePlanningInput): Promise<PlanningResult> {
-  if (input.marker.state !== 'PLANNING') {
-    throw new Error(
-      `the PLANNING drive was entered from ${input.marker.state}. It drives one state and does not decide which state that is (SDD §3.2).`,
-    );
-  }
+  assertDrivenState(input.marker, 'PLANNING');
 
   const now = input.now ?? (() => new Date());
   const rules = { attemptBudget: input.config.attemptBudget };

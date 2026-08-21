@@ -186,3 +186,51 @@ export function stagedPaths(root: string): string[] {
   const listing = git(root, ['diff', '--cached', '--name-only', '-z']);
   return listing.split('\0').filter((path) => path !== '');
 }
+
+/** Whether a commit exists in this repository at all. */
+export function commitExists(root: string, ref: string): boolean {
+  assertRepository(root);
+  try {
+    git(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `ref` is reachable from `from`, which for a commit claim is what
+ * "this tour made it" has to mean: a commit that exists as an object but is on
+ * nobody's branch was not made by the tour that says it was.
+ */
+export function isAncestorOf(root: string, ref: string, from: string): boolean {
+  assertRepository(root);
+  try {
+    git(root, ['merge-base', '--is-ancestor', ref, from]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the remote tracking ref for `branch` carries `commit` (SDD §4.6
+ * step 2). Null where there is no such ref, which is a different answer from
+ * "it does not carry it": a repository with no remote has not failed to push,
+ * it has nowhere to push to.
+ */
+export function remoteCarries(
+  root: string,
+  remote: string,
+  branch: string,
+  commit: string,
+): boolean | null {
+  assertRepository(root);
+  const ref = `refs/remotes/${remote}/${branch}`;
+  try {
+    git(root, ['rev-parse', '--verify', '--quiet', ref]);
+  } catch {
+    return null;
+  }
+  return isAncestorOf(root, commit, ref);
+}

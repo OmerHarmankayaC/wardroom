@@ -1,0 +1,297 @@
+import type { ProjectConfig } from '../config/schema.js';
+import { recordClosureBaseline } from '../documents/baseline.js';
+import { enqueue } from '../gates/queue.js';
+import type { ScopeChangePreview } from '../gates/schema.js';
+import { clearOpenTour, readOpenTour } from '../progress/open-tour.js';
+import type { OpenTourBlock, TourJob } from '../progress/open-tour.js';
+import { commitExists, headCommit, isAncestorOf, remoteCarries } from '../state/git.js';
+import { clearLastFailure } from '../state/last-failure.js';
+import { advance } from '../state/machine.js';
+import type { StateMarker, TourDisposition } from '../state/marker.js';
+import { type ClosingReport, type ReportedDebt, readReport } from '../state/report.js';
+import { assertDrivenState } from './state-guard.js';
+import { appendPending, tourLogPath } from './tour-log.js';
+
+/**
+ * Tour closure (SDD §4.6).
+ *
+ * The procedure the design document never had (D-72): every other state in
+ * §3.2 carried a section and this one carried a table cell, which is how the
+ * artifacts §4.4 and §4.5 require came to be produced by nothing.
+ *
+ * The load-bearing step is the second one. The report is a record and records
+ * are not evidence (§3.3): a report that is wrong about what it did is the
+ * ordinary case, not the exceptional one, and closure is the last moment
+ * anything checks. So its claims are checked against `.git` and the
+ * disagreement is written into the tour log rather than resolved by believing
+ * either side.
+ */
+
+/**
+ * The PM, as closure needs it. Injected for the same reason the other two
+ * sessions are: a session is a live SDK query against an account.
+ */
+export interface ClosingSession {
+  /** Writes the document change a debt calls for, with its version bumped. */
+  readonly settleDebt: (debt: ReportedDebt) => Promise<void>;
+  /** Writes the tour log under the tour-log directory (§4.6 step 4). */
+  readonly writeTourLog: (log: { tourId: string; body: string }) => Promise<void>;
+}
+
+export interface DriveClosingInput {
+  readonly root: string;
+  readonly config: ProjectConfig;
+  /** The marker as resumption left it. Must read `CLOSING`. */
+  readonly marker: StateMarker;
+  readonly session: ClosingSession;
+  readonly disposition: TourDisposition;
+  readonly now?: () => Date;
+}
+
+/** What the report claimed and the repository says, side by side (§4.6 step 2). */
+export interface ClaimCheck {
+  /** One line per commit the report claims and `.git` does not confirm. */
+  readonly commits: readonly string[];
+  /** Why the push claim does not hold, or null where it does. */
+  readonly push: string | null;
+}
+
+export type ClosingResult =
+  | {
+      readonly kind: 'closed';
+      readonly marker: StateMarker;
+      readonly claimCheck: ClaimCheck;
+      readonly disposition: TourDisposition;
+      readonly tourLog: string;
+      /** The occasion the commit gate is to be asked about (§4.5, D-76). */
+      readonly commitOccasion: {
+        readonly kind: 'closure';
+        readonly tourId: string;
+        readonly state: 'CLOSING';
+        readonly disposition: TourDisposition;
+      };
+    }
+  | {
+      readonly kind: 'gated';
+      readonly marker: StateMarker;
+      readonly claimCheck: ClaimCheck;
+      readonly gateId: string;
+      readonly debt: ReportedDebt;
+      readonly tourLog: null;
+      readonly commitOccasion: null;
+    };
+
+/**
+ * Checks the report's commit and push claims against the repository.
+ *
+ * A commit is confirmed only when it exists AND is reachable from HEAD: an
+ * object that exists on nobody's branch was not made by the tour that says it
+ * was, and reading "the hash resolves" as "the commit happened" would accept
+ * exactly the report a wrong one produces.
+ */
+function checkClaims(root: string, config: ProjectConfig, report: ClosingReport): ClaimCheck {
+  const head = headCommit(root);
+  const commits: string[] = [];
+
+  for (const claimed of report.commits) {
+    if (!commitExists(root, claimed)) {
+      commits.push(
+        `${claimed}: the report claims this commit and the repository has no such object.`,
+      );
+      continue;
+    }
+    if (head !== null && !isAncestorOf(root, claimed, head)) {
+      commits.push(
+        `${claimed}: the report claims this commit and it is not reachable from HEAD, so it is on no branch this tour left behind.`,
+      );
+    }
+  }
+
+  let push: string | null = null;
+  if (report.pushed) {
+    const at = head;
+    const carried = at === null ? null : remoteCarries(root, 'origin', config.defaultBranch, at);
+    if (carried === null) {
+      push =
+        'the report claims the work was pushed and there is no remote tracking ref to confirm it against.';
+    } else if (!carried) {
+      push = `the report claims the work was pushed and origin/${config.defaultBranch} does not carry HEAD.`;
+    }
+  }
+
+  return { commits, push };
+}
+
+/** The unfinished jobs a carried tour leaves for its successor (§4.6 step 5). */
+function unfinished(block: OpenTourBlock): readonly TourJob[] {
+  return block.jobs.filter((job) => job.status !== 'done');
+}
+
+export async function driveClosing(input: DriveClosingInput): Promise<ClosingResult> {
+  assertDrivenState(input.marker, 'CLOSING');
+  const tourId = input.marker.tourId;
+  if (tourId === null) {
+    throw new Error('a tour closing has an identifier: it was minted when its record was created.');
+  }
+
+  const now = input.now ?? (() => new Date());
+  const rules = { attemptBudget: input.config.attemptBudget };
+
+  // Step 1. The report is read from disk, never taken from a session: §4.4's
+  // CLOSING branch has to survive a death, and a report that lives only in a
+  // transcript is gone the moment the process is (D-73).
+  const report = readReport(input.root, tourId);
+  if (report === null) {
+    throw new Error(
+      `${tourId} left no report under run/reports, and closure reads one rather than asking a session what happened (SDD §3.0, §4.6 step 1, D-73). Its tour log would have gone to ${tourLogPath(input.root, input.config, tourId)}.`,
+    );
+  }
+
+  // Step 2. Checked, not adopted.
+  const claimCheck = checkClaims(input.root, input.config, report);
+
+  // Step 3. Settle what can be settled; a debt needing a scope decision is the
+  // owner's (D-75), and CLOSING cannot reach IDLE with one open (§3.2).
+  for (const debt of report.debts) {
+    if (debt.settleable) {
+      await input.session.settleDebt(debt);
+      continue;
+    }
+    return raiseScopeChange(input, debt, claimCheck, now());
+  }
+
+  const read = readOpenTour(input.root, input.config.docRoot);
+  const block = read.kind === 'open' ? read.block : null;
+
+  // Step 4 and 5. The log is the permanent record; the block is not.
+  const tourLog = renderTourLog(tourId, report, claimCheck, input.disposition, block);
+  await input.session.writeTourLog({ tourId, body: tourLog });
+  if (input.disposition === 'carried' && block !== null) {
+    appendPending(input.root, input.config, tourId, unfinished(block));
+  }
+
+  // Step 6. The baseline the commit gate compares against, where git cannot
+  // supply one (§3.4, §4.5, D-8, D-30).
+  recordClosureBaseline(input.root, input.config);
+
+  // Step 7. The block, the failure record and the counter all go at IDLE.
+  clearOpenTour(input.root, input.config.docRoot);
+  clearLastFailure(input.root);
+  const marker = advance(input.root, input.marker, { type: 'close' }, rules, now()).marker;
+
+  return {
+    kind: 'closed',
+    marker,
+    claimCheck,
+    disposition: input.disposition,
+    tourLog,
+    // Step 8. Closure does not commit: it says which occasion the commit gate
+    // is to be asked about, and the gate decides (§4.5, D-76).
+    commitOccasion: {
+      kind: 'closure',
+      tourId,
+      state: 'CLOSING',
+      disposition: input.disposition,
+    },
+  };
+}
+
+function raiseScopeChange(
+  input: DriveClosingInput,
+  debt: ReportedDebt,
+  claimCheck: ClaimCheck,
+  now: Date,
+): ClosingResult {
+  const preview: ScopeChangePreview = {
+    kind: 'scope-change',
+    sections: [
+      {
+        document: debt.document,
+        section: debt.section,
+        diff: `The tour reported: ${debt.problem}\nSettling it needs a scope decision, which the PM does not take (CHARTER §2.2).`,
+      },
+    ],
+  };
+
+  const entry = enqueue(
+    input.root,
+    {
+      gateClass: 'scope-change',
+      tourId: input.marker.tourId,
+      jobIndex: input.marker.jobIndex,
+      interruptedState: 'CLOSING',
+      what: `Decide the scope question ${debt.document} §${debt.section} raises before the tour closes`,
+      why: 'FR-2.1 and CHARTER §2.2: the PM settles document debts and does not set scope, and §3.2 forbids reaching IDLE with an open debt (D-75)',
+      preview,
+    },
+    { now },
+  );
+
+  return {
+    kind: 'gated',
+    marker: advance(
+      input.root,
+      input.marker,
+      { type: 'raise-gate', gateClass: 'scope-change', gateId: entry.gateId },
+      { attemptBudget: input.config.attemptBudget },
+      now,
+    ).marker,
+    claimCheck,
+    gateId: entry.gateId,
+    debt,
+    tourLog: null,
+    commitOccasion: null,
+  };
+}
+
+/** The tour log's body (§4.6 step 4): what a later reader has instead of the block. */
+function renderTourLog(
+  tourId: string,
+  report: ClosingReport,
+  claimCheck: ClaimCheck,
+  disposition: TourDisposition,
+  block: OpenTourBlock | null,
+): string {
+  const disagreements = [
+    ...claimCheck.commits,
+    ...(claimCheck.push === null ? [] : [claimCheck.push]),
+  ];
+
+  return [
+    `# ${tourId}`,
+    '',
+    `- **Disposition:** ${disposition}`,
+    `- **Goal:** ${block?.goal ?? 'not recorded'}`,
+    `- **Based on:** ${block?.basedOn ?? 'not recorded'}`,
+    '',
+    '## Jobs',
+    '',
+    ...(report.jobs.length === 0
+      ? ['None reported.']
+      : report.jobs.map((job, index) => `${index + 1}. ${job.title}: ${job.verdict}`)),
+    '',
+    '## Commits claimed',
+    '',
+    report.commits.length === 0 ? 'None.' : report.commits.join(', '),
+    '',
+    '## Where the report and the repository disagreed',
+    '',
+    // Kept in the log because closure is the last moment anything checks, and
+    // a disagreement resolved silently would be a disagreement nobody could
+    // find afterwards (§4.6 step 2).
+    ...(disagreements.length === 0 ? ['Nowhere.'] : disagreements.map((line) => `- ${line}`)),
+    '',
+    '## What remains open',
+    '',
+    ...(block === null
+      ? ['The open-tour block could not be read at closure.']
+      : unfinished(block).length === 0
+        ? ['Nothing.']
+        : unfinished(block).map((job) => `- ${job.title}`)),
+    '',
+    '## Notes',
+    '',
+    report.notes === '' ? 'None.' : report.notes,
+    '',
+  ].join('\n');
+}
