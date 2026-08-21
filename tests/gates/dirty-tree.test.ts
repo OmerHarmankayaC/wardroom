@@ -9,6 +9,7 @@ import { dirtyTreeGateRequest } from '../../src/gates/dirty-tree.js';
 import { GateRefusedError, enqueue } from '../../src/gates/queue.js';
 import { readEntry } from '../../src/gates/store.js';
 import { isWorkingTreeDirty, workingTreeChanges } from '../../src/state/git.js';
+import { transition } from '../../src/state/machine.js';
 
 /**
  * The dirty-tree gate (SRS TD-2, FR-1.6, BACKLOG D-36). A tour must not open
@@ -165,5 +166,43 @@ describe('dirtyTreeGateRequest', () => {
     const files = readdirSync(wardroomPaths(root).gatesDir).filter((f) => f.startsWith('g-'));
     expect(files).toEqual([]);
     expect(readAuditLines(root)).toEqual([]);
+  });
+});
+
+/**
+ * The SDD §3.2 note fixes one pre-tour identity for the dirty-tree gate:
+ * `interrupted_state` IDLE, `job_index` 0, and the id the tour will carry.
+ * Two modules state it, because two artifacts carry it: the entry the owner
+ * answers, and the marker a killed process resumes from.
+ *
+ * Two homes for one fact drift the first time one of them is edited, and the
+ * drift is invisible: each module's own tests keep passing while the entry
+ * and the marker start describing different gates. This test is the binding,
+ * and it is the reason a change to either home has to be a change to both.
+ */
+describe('the entry and the marker agree on the pre-tour identity (SDD §3.2)', () => {
+  const changes = [{ path: 'notes.txt', changeType: 'untracked' }] as const;
+
+  it('carries the same interrupted state, job index and tour id', () => {
+    const request = dirtyTreeGateRequest('tour-3', changes);
+
+    const marker = transition(
+      {
+        state: 'IDLE',
+        tourId: null,
+        jobIndex: null,
+        interruptedState: null,
+        attemptCount: 0,
+        headCommit: 'abc1234',
+        updatedAt: '2026-08-20T12:00:00.000Z',
+      },
+      { type: 'raise-gate', gateClass: 'dirty-tree', tourId: 'tour-3' },
+      { attemptBudget: 3 },
+      new Date('2026-08-20T13:15:00.000Z'),
+    ).marker;
+
+    expect(marker.interruptedState).toBe(request.interruptedState);
+    expect(marker.jobIndex).toBe(request.jobIndex);
+    expect(marker.tourId).toBe(request.tourId);
   });
 });
