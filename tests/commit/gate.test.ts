@@ -451,6 +451,29 @@ describe('the occasion (FR-7.1)', () => {
     expect(verdict.blocks[0]).toContain('detached');
   });
 
+  it('allows a WIP stop on a branch whose first commit is that stop', () => {
+    // A branch created to carry unfinished work has no commit on it until the
+    // stop commits, so this is the ordinary shape of the WIP occasion, not an
+    // edge. It was refused as a detached HEAD while the branch probe resolved
+    // HEAD to a commit before naming it (FR-7.1, D-33).
+    const unborn = mkdtempSync(join(tmpdir(), 'wardroom-unborn-'));
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'wip/tour-3', unborn], { stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: unborn });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: unborn });
+      mkdirSync(join(unborn, '.wardroom', 'run'), { recursive: true });
+
+      const verdict = checkCommit(unborn, configFor(TRACKED_DOCS), {
+        stagedPaths: [],
+        occasion: { kind: 'wip-stop', reason: 'context ceiling reached mid job 6' },
+      });
+
+      expect(verdict).toEqual({ allowed: true, blocks: [], baselineSource: 'none' });
+    } finally {
+      rmSync(unborn, { recursive: true, force: true });
+    }
+  });
+
   it('blocks a second WIP stop, because the rule allows one', () => {
     const config = withTrackedDocuments('1.3');
     git('checkout', '-q', '-b', 'wip/tour-2');

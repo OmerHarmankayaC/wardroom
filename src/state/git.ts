@@ -74,7 +74,20 @@ export function workingTreeChanges(root: string): readonly TreeChange[] {
   // -z: NUL separators and unquoted paths. A rename entry is the new path
   // followed by the original as its own token, so the original is consumed
   // alongside it and the change is reported once, under the path it now has.
-  const output = git(root, ['status', '--porcelain', '-z', '--', ':(exclude).wardroom/run']);
+  // `--untracked-files=normal` is stated rather than left to configuration.
+  // `--porcelain` fixes the output format, not which files are selected, so a
+  // repository or machine carrying `status.showUntrackedFiles = no` would
+  // otherwise hand back a tree with uncommitted work in it as clean, and the
+  // gate that exists to stop a tour opening over the owner's work would never
+  // fire (FR-1.6, D-36). A probe must report the tree, not the setting.
+  const output = git(root, [
+    'status',
+    '--porcelain',
+    '-z',
+    '--untracked-files=normal',
+    '--',
+    ':(exclude).wardroom/run',
+  ]);
   const tokens = output.split('\0').filter((token) => token !== '');
 
   const changes: TreeChange[] = [];
@@ -125,13 +138,23 @@ export function fileAtHead(root: string, path: string): string | null {
   }
 }
 
-/** The current branch name, or null on a detached HEAD. */
+/**
+ * The current branch name, or null on a detached HEAD.
+ *
+ * `symbolic-ref` reads what HEAD points at, which is a question a branch with
+ * no commit on it can still answer. `rev-parse --abbrev-ref HEAD` cannot: it
+ * resolves HEAD to a commit first and fails on an unborn branch, which made
+ * a freshly created branch indistinguishable from a detached HEAD. That
+ * mattered exactly where this is asked, at a WIP stop on a branch created for
+ * it, whose first commit is the stop itself (FR-7.1, D-33).
+ */
 export function currentBranch(root: string): string | null {
   assertRepository(root);
   try {
-    const name = git(root, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
-    return name === 'HEAD' ? null : name;
+    return git(root, ['symbolic-ref', '--short', 'HEAD']).trim();
   } catch {
+    // HEAD is not a symbolic ref: it names a commit directly, which is what a
+    // detached HEAD is.
     return null;
   }
 }
