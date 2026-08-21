@@ -22,6 +22,18 @@ export type TourEvent =
   | { readonly type: 'open'; readonly tourId: string }
   /** PLANNING to EXECUTING: scope written, job list handed over. */
   | { readonly type: 'plan-complete' }
+  /**
+   * A job boundary inside EXECUTING: the job is done by the whole definition
+   * of done and its commit exists (§4.2, FR-7.1).
+   *
+   * It stays in EXECUTING and moves `job_index` alone. The §3.2 table has no
+   * row for it because the table is about states, and this changes none; the
+   * marker nevertheless carries `job_index` and something has to move it, and
+   * the orchestrator writes the marker at that boundary (D-47). Routing it
+   * through the machine keeps every marker write in one place instead of
+   * giving the loop a second way to write one.
+   */
+  | { readonly type: 'job-boundary'; readonly jobIndex: number }
   /** EXECUTING to VERIFYING: every job done and committed (§4.2). */
   | { readonly type: 'jobs-done' }
   /** VERIFYING to CLOSING: every command in the green definition passed. */
@@ -86,7 +98,7 @@ export interface Transition {
 const ACCEPTS: Record<TourState, readonly TourEventType[]> = {
   IDLE: ['open', 'raise-gate'],
   PLANNING: ['plan-complete', 'raise-gate'],
-  EXECUTING: ['jobs-done', 'raise-gate'],
+  EXECUTING: ['job-boundary', 'jobs-done', 'raise-gate'],
   VERIFYING: ['green', 'verification-failed'],
   CLOSING: ['close', 'raise-gate'],
   // A decision or a park and nothing else: the orchestrator blocks on the
@@ -321,6 +333,16 @@ export function transition(
     }
     case 'plan-complete':
       return move({ state: 'EXECUTING', jobIndex: 0 });
+    case 'job-boundary': {
+      if (!Number.isInteger(event.jobIndex) || event.jobIndex < 0) {
+        throw new IllegalTransitionError(
+          marker.state,
+          'job-boundary',
+          'a job boundary names the index the tour has reached, as a whole number',
+        );
+      }
+      return move({ jobIndex: event.jobIndex });
+    }
     case 'jobs-done':
       return move({ state: 'VERIFYING' });
     case 'green':
