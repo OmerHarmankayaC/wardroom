@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
+import { list } from '../../src/gates/queue.js';
 import { driveExecuting } from '../../src/loop/executing.js';
 import {
   type OpenTourBlock,
@@ -12,6 +13,7 @@ import {
   renderOpenTourBlock,
 } from '../../src/progress/open-tour.js';
 import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
+import { appendUsage } from '../../src/usage/record.js';
 
 /**
  * The `EXECUTING` drive (SDD §4.2, §3.2).
@@ -49,7 +51,7 @@ const config: ProjectConfig = {
   authMode: 'api_key',
   gateWait: { value: 24, unit: 'h', milliseconds: 86_400_000 },
   attemptBudget: 3,
-  usageBudget: { usd: 20 },
+  usageBudget: { usd: 10 },
   trackRuntime: false,
 };
 
@@ -117,6 +119,7 @@ const NOW = () => new Date('2026-08-21T10:00:00.000Z');
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'wardroom-executing-'));
   ensureRunDir(root);
+  mkdirSync(wardroomPaths(root).gatesDir, { recursive: true });
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
   execFileSync('git', ['config', 'user.email', 'f@example.invalid'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: root });
@@ -310,5 +313,171 @@ describe('the drive does not do the session s work', () => {
     await drive(recordingSession().session);
 
     expect(readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8')).toBe(before);
+  });
+});
+
+describe('the usage ceiling ends the tour carried, at a boundary (D-66)', () => {
+  function spend(jobIndex: number | null, usd: number): void {
+    appendUsage(root, {
+      ts: '2026-08-21T09:00:00.000Z',
+      role: 'implementer',
+      state: 'EXECUTING',
+      tourId: 'tour-9',
+      jobIndex,
+      tokens: { input: 10, output: 1 },
+      usd,
+    });
+  }
+
+  /** A session that spends `usd` on each job as it finishes it. */
+  function spendingSession(usd: number) {
+    const ran: number[] = [];
+    return {
+      ran,
+      session: {
+        runJob: async (_job: unknown, index: number) => {
+          ran.push(index);
+          spend(index, usd);
+        },
+        acceptancePasses: async (_job: unknown, index: number) => ran.includes(index),
+      },
+    };
+  }
+
+  it('runs every job where the tour stays inside the ceiling', async () => {
+    const { ran, session } = spendingSession(1);
+
+    const result = await drive(session);
+
+    expect(ran).toEqual([0, 1, 2]);
+    expect(result.carried).toBe(false);
+  });
+
+  it('stops at the first boundary where spent plus the largest job reaches it', async () => {
+    // Ceiling 10, five per job: after job 0 the sum is 5 plus 5, which reaches
+    // it, so job 1 never starts.
+    const { ran, session } = spendingSession(5);
+
+    const result = await drive(session);
+
+    expect(ran).toEqual([0]);
+    expect(result.carried).toBe(true);
+  });
+
+  it('leaves EXECUTING for VERIFYING, never the abandonment path', async () => {
+    // A tour stopped by its budget is not a failure: it must not travel the
+    // route that exists for a tour that could not go green (D-35, D-66).
+    const { session } = spendingSession(5);
+
+    const result = await drive(session);
+
+    expect(result.marker.state).toBe('VERIFYING');
+    expect(result.marker.gateId).toBeNull();
+    expect(list(root, { includeResolved: true })).toEqual([]);
+  });
+
+  it('finishes the job it is on before it stops, never mid-job', async () => {
+    // FR-1.4: the tour ends at the next job boundary, after the current job is
+    // green and committed, and never mid-job.
+    const { ran, session } = spendingSession(5);
+
+    await drive(session);
+
+    const read = readMarker(root);
+    expect(read.kind === 'ok' && read.marker.jobIndex).toBe(ran.length);
+  });
+
+  it('names the disposition the closure is to record', async () => {
+    const { session } = spendingSession(5);
+
+    const result = await drive(session);
+
+    expect(result.disposition).toBe('carried');
+  });
+
+  it('records the reading the decision was made on', async () => {
+    const { session } = spendingSession(5);
+
+    const result = await drive(session);
+
+    expect(result.ceiling?.kind).toBe('reached');
+    expect(result.ceiling?.kind === 'reached' && result.ceiling.spentUsd).toBe(5);
+  });
+
+  it('never fires where the meter is inactive, and says so', async () => {
+    const { ran, session } = spendingSession(50);
+
+    const result = await driveExecuting({
+      root,
+      config: { ...config, authMode: 'subscription' },
+      marker: START,
+      session,
+      now: NOW,
+    });
+
+    expect(ran).toEqual([0, 1, 2]);
+    expect(result.carried).toBe(false);
+    expect(result.ceiling?.kind).toBe('inactive');
+  });
+
+  it('does not check before the first boundary, since nothing has been spent', async () => {
+    // The rule is defined from job 1: at the first boundary the largest job so
+    // far is the job just finished. Checking before that would compare against
+    // a largest job of zero and never fire, or fire on nothing at all.
+    spend(null, 9.99);
+    const { ran, session } = spendingSession(0.01);
+
+    const result = await drive(session);
+
+    expect(ran[0]).toBe(0);
+    expect(result.carried).toBe(true);
+  });
+});
+
+describe('the ceiling at the edges of the job list', () => {
+  function spendPerJob(usd: number) {
+    const ran: number[] = [];
+    return {
+      ran,
+      session: {
+        runJob: async (_job: unknown, index: number) => {
+          ran.push(index);
+          appendUsage(root, {
+            ts: '2026-08-21T09:00:00.000Z',
+            role: 'implementer',
+            state: 'EXECUTING',
+            tourId: 'tour-9',
+            jobIndex: index,
+            tokens: { input: 10, output: 1 },
+            usd,
+          });
+        },
+        acceptancePasses: async (_job: unknown, index: number) => ran.includes(index),
+      },
+    };
+  }
+
+  it('does not carry a tour whose ceiling is reached at the last boundary', async () => {
+    // Three jobs at 2.5 each: after job 2 the sum is 7.5 plus 2.5, which
+    // reaches 10. Nothing was stopped, because nothing was left, and calling
+    // that carried would hand a successor an empty list to plan from.
+    const { ran, session } = spendPerJob(2.5);
+
+    const result = await drive(session);
+
+    expect(ran).toEqual([0, 1, 2]);
+    expect(result.carried).toBe(false);
+    expect(result.disposition).toBe('closed');
+    expect(result.ceiling?.kind).toBe('reached');
+  });
+
+  it('takes no reading at all where no job ran', async () => {
+    // A check that never ran is not a check that found the tour affordable.
+    const { ran, session } = recordingSession(() => true);
+
+    const result = await drive(session);
+
+    expect(ran).toEqual([]);
+    expect(result.ceiling).toBeNull();
   });
 });

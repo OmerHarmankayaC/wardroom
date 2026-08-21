@@ -1,7 +1,8 @@
 import type { ProjectConfig } from '../config/schema.js';
 import { type OpenTourBlock, type TourJob, readOpenTour } from '../progress/open-tour.js';
 import { advance } from '../state/machine.js';
-import type { StateMarker } from '../state/marker.js';
+import type { StateMarker, TourDisposition } from '../state/marker.js';
+import { type CeilingVerdict, ceilingVerdict } from './ceiling.js';
 import { assertDrivenState } from './state-guard.js';
 
 /**
@@ -68,6 +69,26 @@ export interface DriveResult {
   readonly ran: readonly number[];
   /** Where the run picked up, which a resumed run answers differently. */
   readonly resumedAt: number;
+  /**
+   * Whether the usage ceiling ended the tour before its job list was done
+   * (FR-1.4, D-66).
+   *
+   * A tour stopped by its budget is not a failure and must not travel the
+   * abandonment path, which exists for a tour that could not go green (D-35).
+   * It leaves EXECUTING for VERIFYING exactly as a finished tour does.
+   */
+  readonly carried: boolean;
+  /** The disposition the closure is to record (§3.2, §4.6 step 5). */
+  readonly disposition: TourDisposition;
+  /**
+   * The reading the decision was made on, or null where no boundary was
+   * crossed and no reading was taken.
+   *
+   * Null rather than a `within` standing in for it: a check that never ran is
+   * not a check that found the tour affordable, and reporting the second for
+   * the first is how "no data" gets read as "zero".
+   */
+  readonly ceiling: CeilingVerdict | null;
 }
 
 /** A job the loop handed to the session and got no progress on. */
@@ -112,6 +133,11 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
   const ran: number[] = [];
   let marker = input.marker;
   let resumedAt = block.jobs.length;
+  let carried = false;
+  // Not read before the first boundary. The rule is defined from job 1,
+  // because at the first boundary the largest job so far is the job just
+  // finished; checking earlier would compare against a largest job of zero.
+  let ceiling: CeilingVerdict | null = null;
 
   for (const [index, job] of block.jobs.entries()) {
     if (await input.session.acceptancePasses(job, index)) continue;
@@ -134,8 +160,31 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
       rules,
       now(),
     ).marker;
+
+    // The ceiling is read at the boundary and never mid-job (FR-1.4): the job
+    // is green and committed by the time this runs, which is the whole reason
+    // the check has a moment rather than a moving threshold.
+    ceiling = ceilingVerdict(input.root, input.config, marker.tourId);
+    // Only where a job is left to be stopped before. A ceiling reached at the
+    // last boundary stopped nothing: the tour finished its list, and calling
+    // that carried would hand a successor an empty list to plan from.
+    if (ceiling.kind === 'reached' && index + 1 < block.jobs.length) {
+      carried = true;
+      break;
+    }
   }
 
   marker = advance(input.root, marker, { type: 'jobs-done' }, rules, now()).marker;
-  return { marker, block, ran, resumedAt };
+  return {
+    marker,
+    block,
+    ran,
+    resumedAt,
+    carried,
+    // A tour stopped by its budget is not a failure and must not travel the
+    // abandonment path, which exists for a tour that could not go green
+    // (D-35, D-66).
+    disposition: carried ? 'carried' : 'closed',
+    ceiling,
+  };
 }

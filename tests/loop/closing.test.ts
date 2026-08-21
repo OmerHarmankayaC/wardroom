@@ -403,3 +403,68 @@ describe('the closure commit is one commit, at its own occasion (D-76)', () => {
     expect(result.commitOccasion).toBeNull();
   });
 });
+
+describe('a carried tour hands its unfinished jobs to its successor (D-66)', () => {
+  it('writes them into Pending, which is where the successor plans from', async () => {
+    // The end of the route: the ceiling ends the tour at a boundary, the tour
+    // travels VERIFYING to CLOSING with the disposition carried, and what it
+    // did not finish lands where §4.1 reads it.
+    writeProgress(
+      renderOpenTourBlock({
+        ...block,
+        jobs: [
+          { title: 'First job', criterion: 'the first thing holds', status: 'done' },
+          { title: 'Second job', criterion: 'the second thing holds', status: 'pending' },
+          { title: 'Third job', criterion: 'the third thing holds', status: 'pending' },
+        ],
+      }),
+    );
+
+    await close({ disposition: 'carried' });
+
+    const progress = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
+    expect(progress).toMatch(/Carried from tour-9/);
+    expect(progress).toMatch(/Second job: the second thing holds/);
+    expect(progress).toMatch(/Third job: the third thing holds/);
+    expect(progress).not.toMatch(/- {2}First job/);
+  });
+
+  it('leaves Pending alone for a tour that finished its list', async () => {
+    const before = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
+
+    await close({ disposition: 'closed' });
+
+    const after = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
+    expect(after).not.toMatch(/Carried from/);
+    expect(before).toContain('nothing');
+  });
+
+  it('adds to Pending rather than replacing what was already waiting', async () => {
+    // Pending is the owner's list as much as Wardroom's, and a closure that
+    // overwrote it would delete whatever else was waiting there.
+    writeProgress(
+      renderOpenTourBlock({
+        ...block,
+        jobs: [{ title: 'Only job', criterion: 'a', status: 'pending' }],
+      }),
+    );
+    const path = join(root, DOC_ROOT, 'PROGRESS.md');
+    writeFileSync(
+      path,
+      readFileSync(path, 'utf8').replace('nothing', '- something the owner wrote'),
+    );
+
+    await close({ disposition: 'carried' });
+
+    const progress = readFileSync(path, 'utf8');
+    expect(progress).toMatch(/something the owner wrote/);
+    expect(progress).toMatch(/Only job/);
+  });
+
+  it('reaches IDLE by the ordinary route, with no gate raised', async () => {
+    const result = await close({ disposition: 'carried' });
+
+    expect(result.marker.state).toBe('IDLE');
+    expect(list(root, { includeResolved: true })).toEqual([]);
+  });
+});

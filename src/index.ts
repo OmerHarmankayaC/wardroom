@@ -280,3 +280,4 @@ export {
   type DriveClosingInput,
   driveClosing,
 } from './loop/closing.js';
+export { type CeilingVerdict, ceilingVerdict } from './loop/ceiling.js';
