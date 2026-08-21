@@ -177,3 +177,14 @@ export {
   documentDenyRules,
 } from './roles/permissions.js';
 export { tourLogDirectory } from './documents/set.js';
+export {
+  type ClassifiedDetail,
+  type ToolCallClassification,
+  classifyToolCall,
+} from './gates/classify.js';
+export {
+  type GateInterceptor,
+  type GateInterceptorInput,
+  createGateInterceptor,
+  decisionOutcome,
+} from './roles/intercept.js';
