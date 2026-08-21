@@ -148,3 +148,25 @@ export {
   updateJobStatus,
   writeOpenTour,
 } from './progress/open-tour.js';
+export {
+  ROLES,
+  type RoleDefinition,
+  type RoleName,
+  type RolePermissions,
+} from './roles/schema.js';
+export { roleDefinition } from './roles/definition.js';
+export {
+  FILE_RULE_TOOL,
+  RUNTIME_DENY_RULE,
+  anchoredPath,
+  fileRule,
+  rolePermissions,
+} from './roles/permissions.js';
+export {
+  BANNED_PERMISSION_MODES,
+  ROLE_PERMISSION_MODE,
+  RoleSessionRefusedError,
+  type BuildRoleSessionInput,
+  type RoleSession,
+  buildRoleSession,
+} from './roles/session.js';
