@@ -50,6 +50,15 @@ export {
   writeMarker,
 } from './state/marker.js';
 export { type NextAction, type ResumeResult, resume } from './state/resume.js';
+export {
+  IllegalTransitionError,
+  type TourEvent,
+  type TourEventType,
+  type Transition,
+  type TransitionRules,
+  advance,
+  transition,
+} from './state/machine.js';
 export { atomicWriteFile } from './fs/atomic.js';
 export { GATE_ID_PATTERN, mintGateId } from './gates/id.js';
 export { asPreview, previewProblem } from './gates/preview.js';
