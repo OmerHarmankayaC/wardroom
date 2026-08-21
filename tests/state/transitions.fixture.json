@@ -3,12 +3,12 @@
   "attemptBudget": 2,
   "steps": [
     {
-      "event": { "type": "open", "tourId": "tour-9" },
-      "expect": { "state": "PLANNING", "gateId": null, "attemptCount": 0 }
+      "event": { "type": "open" },
+      "expect": { "state": "PLANNING", "gateId": null, "attemptCount": 0, "tourId": null }
     },
     {
-      "event": { "type": "plan-complete" },
-      "expect": { "state": "EXECUTING", "gateId": null, "jobIndex": 0 }
+      "event": { "type": "plan-complete", "tourId": "tour-9" },
+      "expect": { "state": "EXECUTING", "gateId": null, "jobIndex": 0, "tourId": "tour-9" }
     },
     {
       "event": { "type": "raise-gate", "gateClass": "push", "gateId": "g-20260821T090000Z-aaaa" },

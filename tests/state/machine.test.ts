@@ -56,18 +56,27 @@ function step(from: StateMarker, event: TourEvent) {
 
 describe('the legal transitions of the SDD §3.2 table', () => {
   it('IDLE opens into PLANNING', () => {
-    const result = step(at('IDLE'), { type: 'open', tourId: 'tour-3' });
+    const result = step(at('IDLE'), { type: 'open' });
 
     expect(result.marker.state).toBe('PLANNING');
-    expect(result.marker.tourId).toBe('tour-3');
+    // Nameless until the record exists: the identifier is minted when the
+    // open-tour block is written at the end of planning (§3.3, §4.1 step 7,
+    // D-45, D-70).
+    expect(result.marker.tourId).toBeNull();
     expect(result.marker.attemptCount).toBe(0);
   });
 
   it('PLANNING completes into EXECUTING at job 0', () => {
-    const result = step(at('PLANNING', { jobIndex: null }), { type: 'plan-complete' });
+    const result = step(at('PLANNING', { jobIndex: null, tourId: null }), {
+      type: 'plan-complete',
+      tourId: 'tour-3',
+    });
 
     expect(result.marker.state).toBe('EXECUTING');
     expect(result.marker.jobIndex).toBe(0);
+    // The tour is named as its record is created, and this is where that
+    // happens (§3.3, §4.1 step 7, D-45).
+    expect(result.marker.tourId).toBe('tour-3');
   });
 
   it('EXECUTING moves to VERIFYING once the jobs are done', () => {
@@ -105,7 +114,7 @@ describe('the legal transitions of the SDD §3.2 table', () => {
   });
 
   it('stamps updated_at with the transition clock', () => {
-    const result = step(at('IDLE'), { type: 'open', tourId: 'tour-3' });
+    const result = step(at('IDLE'), { type: 'open' });
 
     expect(result.marker.updatedAt).toBe(NOW.toISOString());
   });
@@ -124,17 +133,18 @@ describe('raising a gate', () => {
     expect(result.marker.jobIndex).toBe(2);
   });
 
-  it('raises the dirty-tree gate from IDLE with the id the tour will carry (D-36)', () => {
+  it('raises the dirty-tree gate from IDLE naming no tour at all (D-36, D-70)', () => {
     const result = step(at('IDLE'), {
       type: 'raise-gate',
       gateId: GATE_ID,
       gateClass: 'dirty-tree',
-      tourId: 'tour-3',
     });
 
     expect(result.marker.state).toBe('GATED');
     expect(result.marker.interruptedState).toBe('IDLE');
-    expect(result.marker.tourId).toBe('tour-3');
+    // The gate is a decision about the working tree, not about a tour, and no
+    // tour record exists to name (§3.2, D-45, D-70).
+    expect(result.marker.tourId).toBeNull();
     expect(result.marker.jobIndex).toBe(0);
   });
 
@@ -144,13 +154,12 @@ describe('raising a gate', () => {
     // tree is the same tour as one that opened under a clean one, so the two
     // markers must agree; letting them drift would put the pre-tour identity
     // the gate entry carries (job 0) into a state that has no job yet.
-    const direct = step(at('IDLE'), { type: 'open', tourId: 'tour-3' }).marker;
+    const direct = step(at('IDLE'), { type: 'open' }).marker;
 
     const gated = step(at('IDLE', { attemptCount: 2 }), {
       type: 'raise-gate',
       gateId: GATE_ID,
       gateClass: 'dirty-tree',
-      tourId: 'tour-3',
     });
     const approved = step(gated.marker, {
       type: 'decide',
@@ -161,10 +170,12 @@ describe('raising a gate', () => {
     expect(approved).toEqual(direct);
   });
 
-  it('refuses a dirty-tree gate without the tour id it will carry', () => {
+  it('refuses a plan that completes without naming the tour it created', () => {
+    // The one place an identifier is minted (§3.3, §4.1 step 7, D-45). A blank
+    // here would put EXECUTING under a tour nothing can find.
     expect(() =>
-      step(at('IDLE'), { type: 'raise-gate', gateId: GATE_ID, gateClass: 'dirty-tree' }),
-    ).toThrow(/tour id/);
+      step(at('PLANNING', { tourId: null }), { type: 'plan-complete', tourId: '  ' }),
+    ).toThrow(/named/);
   });
 
   it('refuses the dirty-tree class anywhere but IDLE', () => {
@@ -173,7 +184,6 @@ describe('raising a gate', () => {
         type: 'raise-gate',
         gateId: GATE_ID,
         gateClass: 'dirty-tree',
-        tourId: 'tour-3',
       }),
     ).toThrow(IllegalTransitionError);
   });
@@ -346,7 +356,9 @@ describe('the dirty-tree decision (FR-1.6, D-36)', () => {
     const result = step(gated, { type: 'decide', gateClass: 'dirty-tree', approved: true });
 
     expect(result.marker.state).toBe('PLANNING');
-    expect(result.marker.tourId).toBe('tour-3');
+    // Approval opens planning over the acknowledged tree; it mints nothing
+    // (§3.2, D-70), so the tour is still nameless here.
+    expect(result.marker.tourId).toBeNull();
     expect(result.exits).toBe(false);
   });
 
@@ -361,7 +373,7 @@ describe('the dirty-tree decision (FR-1.6, D-36)', () => {
 
 describe('the attempt_count lifecycle belongs to the tour (SDD §3.2)', () => {
   it('is zero at tour open', () => {
-    const opened = step(at('IDLE'), { type: 'open', tourId: 'tour-4' });
+    const opened = step(at('IDLE'), { type: 'open' });
 
     expect(opened.marker.attemptCount).toBe(0);
   });
@@ -390,8 +402,8 @@ describe('the attempt_count lifecycle belongs to the tour (SDD §3.2)', () => {
 
 describe('an illegal transition is refused naming the expected ones', () => {
   const EVENTS: Record<string, TourEvent> = {
-    open: { type: 'open', tourId: 'tour-9' },
-    'plan-complete': { type: 'plan-complete' },
+    open: { type: 'open' },
+    'plan-complete': { type: 'plan-complete', tourId: 'tour-9' },
     'jobs-done': { type: 'jobs-done' },
     green: { type: 'green' },
     'verification-failed': { type: 'verification-failed' },
@@ -460,8 +472,8 @@ describe('advance writes the marker at every transition (SDD §3.3)', () => {
   it('persists each step so a death lands on the last transition, not before it', () => {
     let current = at('IDLE');
     const events: TourEvent[] = [
-      { type: 'open', tourId: 'tour-3' },
-      { type: 'plan-complete' },
+      { type: 'open' },
+      { type: 'plan-complete', tourId: 'tour-3' },
       { type: 'jobs-done' },
       { type: 'green' },
     ];
@@ -477,7 +489,7 @@ describe('advance writes the marker at every transition (SDD §3.3)', () => {
   });
 
   it('leaves no temporary file behind, because the write is atomic (D-20)', () => {
-    advance(root, at('IDLE'), { type: 'open', tourId: 'tour-3' }, RULES, NOW);
+    advance(root, at('IDLE'), { type: 'open' }, RULES, NOW);
 
     expect(readdirSync(wardroomPaths(root).runDir)).toEqual(['state.json']);
   });

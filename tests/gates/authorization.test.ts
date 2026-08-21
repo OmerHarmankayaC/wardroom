@@ -62,7 +62,7 @@ function approved(overrides: Partial<EnqueueRequest> = {}): string {
   return entry.gateId;
 }
 
-function look(overrides: Partial<{ gateClass: string; what: string; tourId: string }> = {}) {
+function look(overrides: Partial<{ gateClass: string; what: string; tourId: string | null }> = {}) {
   return authorizationFor(root, {
     gateClass: 'push',
     what: PUSH,
@@ -160,13 +160,13 @@ describe('an unconsumed authorization does not survive the cycle', () => {
     expect(look({ tourId: 'tour-10' })).toBeNull();
   });
 
-  it('is not found once the cycle has reached IDLE and carries no tour', () => {
+  it('is not found for a cycle that carries no tour at all', () => {
     // At IDLE the marker carries no tour_id, so nothing an earlier cycle
     // approved can match. The lapse needs no event of its own: the entry is
     // scoped to the cycle that raised it (§3.2, D-61).
     approved();
 
-    expect(look({ tourId: '' })).toBeNull();
+    expect(look({ tourId: null })).toBeNull();
   });
 
   it('still holds inside the cycle that raised it, across a death', () => {
@@ -190,6 +190,6 @@ describe('an unconsumed authorization does not survive the cycle', () => {
     const gateId = approved(destructive);
 
     expect(look({ gateClass: 'destructive', what: 'Run `rm -rf build`' })?.gateId).toBe(gateId);
-    expect(look({ gateClass: 'destructive', what: 'Run `rm -rf build`', tourId: '' })).toBeNull();
+    expect(look({ gateClass: 'destructive', what: 'Run `rm -rf build`', tourId: null })).toBeNull();
   });
 });

@@ -7,6 +7,17 @@ import type { TourState } from '../state/marker.js';
  * everything a returning owner needs in order to answer is in the file.
  */
 
+/**
+ * The classes a gate can be raised for before a tour record exists (D-70).
+ *
+ * `dirty-tree` is raised at `IDLE`, where nothing has been planned; the
+ * `tour-budget` gate is raised with no tour where a run of failed planning
+ * attempts exhausted the budget, since planning is what creates the record
+ * (D-45, D-50, D-59). Every other class is raised from inside a tour and
+ * names it.
+ */
+export const PRE_RECORD_GATE_CLASSES = ['dirty-tree', 'tour-budget'] as const;
+
 /** The TD-2 gate classes. */
 export const GATE_CLASSES = [
   'push',
@@ -101,7 +112,15 @@ export interface GateEntry {
   readonly gateId: string;
   readonly gateClass: GateClass;
   readonly status: GateStatus;
-  readonly tourId: string;
+  /**
+   * The tour the gate was raised in, or null where no tour record existed
+   * yet (SDD §3.1, D-70).
+   *
+   * Null, never an empty string. Null is a determinate fact about the action,
+   * that nothing has been planned; an empty string is a field somebody failed
+   * to fill, and collapsing the two reports the second as the first (D-32).
+   */
+  readonly tourId: string | null;
   readonly jobIndex: number | null;
   /** The state to return to once the gate is decided (SDD §3.2). */
   readonly interruptedState: TourState;

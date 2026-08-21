@@ -129,26 +129,26 @@ describe('dirtyTreeGateRequest', () => {
   const changes = [{ path: 'notes.txt', changeType: 'untracked' as const }];
 
   it('carries the pre-tour identity the SDD §3.2 note fixes', () => {
-    const request = dirtyTreeGateRequest('tour-3', changes);
+    const request = dirtyTreeGateRequest(changes);
 
     // interrupted_state is IDLE because no tour exists yet; job_index is 0 for
-    // the same reason; tour_id is the id the tour will carry, knowable before
-    // planning because identifiers are monotonic (SRS §3.3).
+    // the same reason; tour_id is null because nothing mints an identifier
+    // before the tour record is created (§3.3, D-45, D-70).
     expect(request.gateClass).toBe('dirty-tree');
     expect(request.interruptedState).toBe('IDLE');
     expect(request.jobIndex).toBe(0);
-    expect(request.tourId).toBe('tour-3');
+    expect(request.tourId).toBeNull();
   });
 
   it('states what is asked and the rule that classified it', () => {
-    const request = dirtyTreeGateRequest('tour-3', changes);
+    const request = dirtyTreeGateRequest(changes);
 
     expect(request.what.trim()).not.toBe('');
     expect(request.why).toContain('FR-1.6');
   });
 
   it('round-trips through the entry store with its paths and change types', () => {
-    const entry = enqueue(root, dirtyTreeGateRequest('tour-3', changes), {
+    const entry = enqueue(root, dirtyTreeGateRequest(changes), {
       now: new Date('2026-08-20T13:15:00.000Z'),
       randomHex: () => 'a3f9',
     });
@@ -158,7 +158,7 @@ describe('dirtyTreeGateRequest', () => {
   });
 
   it('is refused at enqueue when the change list is empty, leaving no trace (D-32)', () => {
-    expect(() => enqueue(root, dirtyTreeGateRequest('tour-3', []))).toThrow(GateRefusedError);
+    expect(() => enqueue(root, dirtyTreeGateRequest([]))).toThrow(GateRefusedError);
 
     // No entry file and no audit line: a refused request is not an action, and
     // an empty list means the tree is clean and the gate should not have been
@@ -184,7 +184,7 @@ describe('the entry and the marker agree on the pre-tour identity (SDD §3.2)', 
   const changes = [{ path: 'notes.txt', changeType: 'untracked' }] as const;
 
   it('carries the same interrupted state, job index and tour id', () => {
-    const request = dirtyTreeGateRequest('tour-3', changes);
+    const request = dirtyTreeGateRequest(changes);
 
     const marker = transition(
       {
@@ -201,7 +201,6 @@ describe('the entry and the marker agree on the pre-tour identity (SDD §3.2)', 
         type: 'raise-gate',
         gateClass: 'dirty-tree',
         gateId: 'g-20260821T090000Z-aaaa',
-        tourId: 'tour-3',
       },
       { attemptBudget: 3 },
       new Date('2026-08-20T13:15:00.000Z'),
@@ -209,6 +208,9 @@ describe('the entry and the marker agree on the pre-tour identity (SDD §3.2)', 
 
     expect(marker.interruptedState).toBe(request.interruptedState);
     expect(marker.jobIndex).toBe(request.jobIndex);
+    // Both null: nothing mints an identifier before the tour record exists
+    // (§3.2, §3.3, D-45, D-70).
     expect(marker.tourId).toBe(request.tourId);
+    expect(marker.tourId).toBeNull();
   });
 });

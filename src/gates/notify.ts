@@ -18,7 +18,8 @@ export interface ParkedNotification {
   readonly kind: 'tour-parked';
   readonly gateId: string;
   readonly gateClass: GateClass;
-  readonly tourId: string;
+  /** Null for a gate raised before any tour record exists (SDD §3.1, D-70). */
+  readonly tourId: string | null;
   readonly what: string;
   readonly why: string;
   /** The state the tour returns to once the owner decides (SDD §3.2). */

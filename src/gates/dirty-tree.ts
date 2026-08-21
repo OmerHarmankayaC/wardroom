@@ -13,25 +13,29 @@ import type { EnqueueRequest } from './queue.js';
 
 /**
  * The enqueue request for a dirty tree found at the IDLE to PLANNING
- * transition, with the pre-tour identity the SDD §3.2 note fixes:
- * `interrupted_state` is IDLE because no tour exists yet, `job_index` is 0
- * for the same reason, and `tour_id` is the id the tour will carry, knowable
- * before planning because identifiers are monotonic per project (SRS §3.3).
+ * transition, with the pre-record identity SDD §3.2 fixes: `interrupted_state`
+ * is IDLE, `job_index` is 0, and `tour_id` is null because no tour record
+ * exists (D-45, D-70).
+ *
+ * It takes no identifier and names none. Nothing mints one at this approval:
+ * the gate is a decision about the working tree, the tour record is created at
+ * the end of planning, and the identifier is minted there and nowhere else
+ * (§3.3, D-45, D-70). Naming a tour here would put a second minting site in
+ * the system and name a tour that may never be planned, since rejection leaves
+ * IDLE and the run exits.
  *
  * An empty change list is not refused here: the preview contract refuses it
  * at enqueue (D-32), and a second refusal ahead of that one would be a second
  * home for the rule.
  */
-export function dirtyTreeGateRequest(
-  tourId: string,
-  changes: readonly TreeChange[],
-): EnqueueRequest {
+export function dirtyTreeGateRequest(changes: readonly TreeChange[]): EnqueueRequest {
+  const count = `${changes.length} uncommitted change${changes.length === 1 ? '' : 's'}`;
   return {
     gateClass: 'dirty-tree',
-    tourId,
+    tourId: null,
     jobIndex: 0,
     interruptedState: 'IDLE',
-    what: `Open ${tourId} over a working tree carrying ${changes.length} uncommitted change${changes.length === 1 ? '' : 's'}`,
+    what: `Begin planning over a working tree carrying ${count}`,
     why: 'FR-1.6: orchestration at IDLE on a dirty tree does not begin planning and does not touch the tree; the owner decides (D-36)',
     preview: { kind: 'dirty-tree', changes },
   };

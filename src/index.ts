@@ -216,3 +216,4 @@ export {
   JobDidNotAdvanceError,
   driveExecuting,
 } from './loop/executing.js';
+export { PRE_RECORD_GATE_CLASSES } from './gates/schema.js';

@@ -18,10 +18,20 @@ import { GATE_BEARING_STATES, type StateMarker, type TourState, writeMarker } fr
  */
 
 export type TourEvent =
-  /** IDLE to PLANNING over a clean or acknowledged tree (§4.1). */
-  | { readonly type: 'open'; readonly tourId: string }
-  /** PLANNING to EXECUTING: scope written, job list handed over. */
-  | { readonly type: 'plan-complete' }
+  /**
+   * IDLE to PLANNING over a clean or acknowledged tree (§4.1).
+   *
+   * It carries no identifier. The tour record is created at the end of
+   * planning and the identifier is minted there and nowhere else (§3.3, §4.1
+   * step 7, D-45, D-70), so a tour in PLANNING has no name yet and inventing
+   * one here would be a second minting site for a tour that may never exist.
+   */
+  | { readonly type: 'open' }
+  /**
+   * PLANNING to EXECUTING: scope written, job list handed over, and the
+   * identifier minted with the open-tour block that carries it (D-45).
+   */
+  | { readonly type: 'plan-complete'; readonly tourId: string }
   /**
    * A job boundary inside EXECUTING: the job is done by the whole definition
    * of done and its commit exists (§4.2, FR-7.1).
@@ -47,15 +57,14 @@ export type TourEvent =
    *
    * `gateId` is required: the marker names the gate (§3.3, D-62), and a
    * transition into GATED that does not know which entry it is waiting on
-   * produces a marker resumption cannot act on. `tourId` is required for the
-   * dirty-tree class, which is raised before the tour exists and carries the
-   * id the tour will carry (D-36); it is meaningless elsewhere.
+   * produces a marker resumption cannot act on. No identifier is carried: a
+   * gate raised at IDLE precedes the tour record, and nothing mints one there
+   * (D-45, D-70).
    */
   | {
       readonly type: 'raise-gate';
       readonly gateClass: GateClass;
       readonly gateId: string;
-      readonly tourId?: string;
     }
   /** GATED to PARKED: the waiting period elapsed (FR-3.3). */
   | { readonly type: 'park' }
@@ -133,10 +142,12 @@ function stamped(marker: StateMarker, now: Date, changes: Partial<StateMarker>):
  * and the approval of a dirty-tree gate, so a tour opened over an
  * acknowledged tree is the same tour as one opened over a clean one.
  */
-function opening(marker: StateMarker, tourId: string, now: Date): StateMarker {
+function opening(marker: StateMarker, now: Date): StateMarker {
   return stamped(marker, now, {
     state: 'PLANNING',
-    tourId,
+    // No name yet: the identifier is minted when the open-tour block is
+    // written at the end of planning (§3.3, §4.1 step 7, D-45, D-70).
+    tourId: null,
     jobIndex: null,
     interruptedState: null,
     attemptCount: 0,
@@ -176,17 +187,12 @@ function raiseGate(
     if (from !== 'IDLE') {
       throw new IllegalTransitionError(from, 'raise-gate', 'dirty-tree is raised at IDLE only');
     }
-    if (event.tourId === undefined || event.tourId.trim() === '') {
-      throw new IllegalTransitionError(
-        from,
-        'raise-gate',
-        'a dirty-tree gate carries the tour id the tour will carry (D-36)',
-      );
-    }
     return stamped(marker, now, {
       state: 'GATED',
       interruptedState: 'IDLE',
-      tourId: event.tourId,
+      // Still nameless: the gate is a decision about the working tree, not
+      // about a tour, and no tour record exists to name (§3.2, D-45, D-70).
+      tourId: null,
       jobIndex: 0,
       gateId: event.gateId,
     });
@@ -262,11 +268,7 @@ function decide(
       // tree (FR-1.6). The pre-tour `job_index` 0 belongs to the gate entry,
       // which is why the opening shape is taken from one place rather than
       // carried over from the marker the gate was raised on.
-      return {
-        marker: opening(marker, marker.tourId ?? '', now),
-        abandoned: false,
-        exits: false,
-      };
+      return { marker: opening(marker, now), abandoned: false, exits: false };
     }
     // Rejection leaves the repository untouched and the run exits. There is
     // no third outcome (FR-1.6).
@@ -321,18 +323,18 @@ export function transition(
   });
 
   switch (event.type) {
-    case 'open': {
+    case 'open':
+      return { marker: withGateRule(opening(marker, now)), abandoned: false, exits: false };
+    case 'plan-complete': {
       if (event.tourId.trim() === '') {
-        throw new IllegalTransitionError(marker.state, 'open', 'a tour opens under its id');
+        throw new IllegalTransitionError(
+          marker.state,
+          'plan-complete',
+          'the tour is named as its record is created, and this is where that happens (§3.3, §4.1 step 7, D-45)',
+        );
       }
-      return {
-        marker: withGateRule(opening(marker, event.tourId, now)),
-        abandoned: false,
-        exits: false,
-      };
+      return move({ state: 'EXECUTING', tourId: event.tourId, jobIndex: 0 });
     }
-    case 'plan-complete':
-      return move({ state: 'EXECUTING', jobIndex: 0 });
     case 'job-boundary': {
       if (!Number.isInteger(event.jobIndex) || event.jobIndex < 0) {
         throw new IllegalTransitionError(

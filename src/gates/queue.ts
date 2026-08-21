@@ -22,7 +22,8 @@ import { listEntryIds, readEntry, writeEntry } from './store.js';
 
 export interface EnqueueRequest {
   readonly gateClass: GateClass;
-  readonly tourId: string;
+  /** Null where no tour record exists yet; see {@link GateEntry.tourId} (D-70). */
+  readonly tourId: string | null;
   readonly jobIndex: number | null;
   readonly interruptedState: TourState;
   readonly what: string;
@@ -264,8 +265,14 @@ export function park(root: string, gateId: string, options: QueueOptions = {}): 
 export interface AuthorizationQuery {
   readonly gateClass: GateClass;
   readonly what: string;
-  /** The cycle asking. Empty for a call made before any tour record exists (D-45). */
-  readonly tourId: string;
+  /**
+   * The cycle asking, or null where no tour record exists yet (D-45, D-70).
+   *
+   * Compared as it is, never coerced. Turning a null into an empty string
+   * would make it match nothing at all, which reads as "the approval lapsed"
+   * when the truth is "the question was asked wrongly".
+   */
+  readonly tourId: string | null;
 }
 
 /**

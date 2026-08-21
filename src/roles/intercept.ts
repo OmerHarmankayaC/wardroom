@@ -352,7 +352,7 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     const standing = authorizationFor(input.root, {
       gateClass: classification.gateClass,
       what: classification.what,
-      tourId: current.tourId ?? '',
+      tourId: current.tourId,
     });
     if (standing !== null) {
       consume(input.root, standing.gateId, classification.what, { now: now() });
@@ -371,7 +371,7 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
         input.root,
         {
           gateClass: classification.gateClass,
-          tourId: current.tourId ?? '',
+          tourId: current.tourId,
           jobIndex: current.jobIndex,
           interruptedState: current.state,
           what: classification.what,

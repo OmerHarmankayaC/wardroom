@@ -13,6 +13,7 @@ import {
   type GateEntry,
   type GatePreview,
   type GateStatus,
+  PRE_RECORD_GATE_CLASSES,
 } from './schema.js';
 
 /**
@@ -44,7 +45,7 @@ interface OnDiskEntry {
   gate_id: string;
   class: string;
   status: string;
-  tour_id: string;
+  tour_id: string | null;
   job_index: number | null;
   interrupted_state: string;
   what: string;
@@ -90,6 +91,40 @@ function isOptionalString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }
 
+/**
+ * `tour_id` under D-70: null for a gate raised before any tour record exists,
+ * a named tour otherwise, and never an empty string.
+ *
+ * Null is accepted for exactly the pre-record classes and refused for every
+ * other, so a missing identifier cannot pass as a pre-record one. An empty
+ * string is refused everywhere, because null is a determinate fact about the
+ * action, that nothing has been planned, and an empty string is a field
+ * somebody failed to fill: reading the second as the first is the collapse
+ * D-32 forbids.
+ */
+function collectTourIdProblem(raw: Record<string, unknown>, problems: string[]): void {
+  const tourId = raw.tour_id;
+
+  if (tourId === null) {
+    if (!(PRE_RECORD_GATE_CLASSES as readonly unknown[]).includes(raw.class)) {
+      problems.push(
+        `tour_id: null names no tour, which only ${PRE_RECORD_GATE_CLASSES.join(' and ')} may do, since they are the classes raised before a tour record exists (SDD §3.1, D-70). A ${String(raw.class)} gate is raised from inside a tour and names it.`,
+      );
+    }
+    return;
+  }
+
+  if (typeof tourId !== 'string') {
+    problems.push('tour_id: must name the tour the gate was raised in, or be null.');
+    return;
+  }
+  if (tourId.trim() === '') {
+    problems.push(
+      'tour_id: is empty. A gate raised before any tour record exists carries null, which says no tour was planned; an empty string says only that nobody filled the field (SDD §3.1, D-32, D-70).',
+    );
+  }
+}
+
 function collectProblems(raw: unknown, problems: string[]): void {
   if (!isJsonObject(raw)) {
     problems.push('the entry is not a JSON object.');
@@ -107,9 +142,7 @@ function collectProblems(raw: unknown, problems: string[]): void {
       `status: must be one of ${GATE_STATUSES.join(', ')}. Expiry is not a status: it stamps parked_at and leaves the gate pending (BACKLOG D-27).`,
     );
   }
-  if (typeof raw.tour_id !== 'string' || raw.tour_id === '') {
-    problems.push('tour_id: must name the tour the gate was raised in.');
-  }
+  collectTourIdProblem(raw, problems);
   if (
     raw.job_index !== null &&
     !(Number.isInteger(raw.job_index) && (raw.job_index as number) >= 0)
