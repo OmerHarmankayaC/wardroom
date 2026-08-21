@@ -67,18 +67,62 @@ function buildPreview(classification: ToolCallClassification): GatePreview {
   };
 }
 
-function interceptor() {
-  return createGateInterceptor({
+/**
+ * One fixture for every interceptor in this file.
+ *
+ * There were four hand-built copies of this before the whole-tour audit, and
+ * the same mistake was made in two of them: a clock that never moves cannot
+ * reach a deadline measured from that same clock, so the wait hung. A fixture
+ * whose clock advances by construction is the fix for the bug and for the
+ * duplication that let it be made twice.
+ */
+interface Fixture {
+  readonly gateWaitMs?: number;
+  readonly pollIntervalMs?: number;
+  /** Milliseconds the clock advances per sleep; the poll interval by default. */
+  readonly tickMs?: number;
+  readonly attemptCount?: number;
+  readonly notify?: (notification: ParkedNotification) => void;
+  readonly buildPreview?: (classification: ToolCallClassification) => GatePreview;
+  /** Runs on each sleep, before the clock advances. */
+  readonly onSleep?: () => void;
+}
+
+const BASE_TIME = new Date('2026-08-21T09:00:00.000Z');
+
+function interceptor(fixture: Fixture = {}) {
+  const pollIntervalMs = fixture.pollIntervalMs ?? 400;
+  const tickMs = fixture.tickMs ?? pollIntervalMs;
+  const gateWaitMs = fixture.gateWaitMs ?? config.gateWait.milliseconds;
+  let clock = BASE_TIME;
+  let slept = 0;
+
+  const built = createGateInterceptor({
     root,
-    config,
+    config: {
+      ...config,
+      gateWait: { value: Math.round(gateWaitMs / 1_000), unit: 's', milliseconds: gateWaitMs },
+    },
     tourId: 'tour-3-b-i',
     jobIndex: 3,
     interruptedState: 'EXECUTING',
-    buildPreview,
+    buildPreview: fixture.buildPreview ?? buildPreview,
+    pollIntervalMs,
+    now: () => clock,
     // The wait is driven by the test rather than by the clock, so the poll is a
     // yield and the suite does not spend real seconds proving a loop loops.
-    sleep: () => new Promise((resolve) => setImmediate(resolve)),
+    sleep: () =>
+      new Promise((resolve) => {
+        slept += 1;
+        fixture.onSleep?.();
+        clock = new Date(clock.getTime() + tickMs);
+        setImmediate(resolve);
+      }),
+    ...(fixture.attemptCount === undefined ? {} : { attemptCount: fixture.attemptCount }),
+    ...(fixture.notify === undefined ? {} : { notify: fixture.notify }),
   });
+
+  return { ...built, sleeps: () => slept };
 }
 
 function toolCall(toolName: string, toolInput: unknown): PreToolUseHookInput {
@@ -246,16 +290,10 @@ describe('the outcome is read off the entry, never assumed', () => {
 
 describe('a gate that cannot be raised denies rather than passing', () => {
   it('denies when the preview cannot be built', async () => {
-    const { hook } = createGateInterceptor({
-      root,
-      config,
-      tourId: 'tour-3-b-i',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
+    const { hook } = interceptor({
       buildPreview: () => {
         throw new Error('the remote is unreachable');
       },
-      sleep: () => new Promise((resolve) => setImmediate(resolve)),
     });
 
     const output = (await hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
@@ -273,15 +311,9 @@ describe('a gate that cannot be raised denies rather than passing', () => {
   });
 
   it('denies when the entry cannot be enqueued', async () => {
-    const { hook } = createGateInterceptor({
-      root,
-      config,
-      tourId: 'tour-3-b-i',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
-      // An empty commit list is refused by the preview contract (D-32).
+    // An empty commit list is refused by the preview contract (D-32).
+    const { hook } = interceptor({
       buildPreview: () => ({ kind: 'push', commits: [], remote: 'origin', branch: 'main' }),
-      sleep: () => new Promise((resolve) => setImmediate(resolve)),
     });
 
     const output = (await hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
@@ -294,40 +326,24 @@ describe('a gate that cannot be raised denies rather than passing', () => {
 });
 
 describe('gate_wait elapsing parks the tour', () => {
-  const base = new Date('2026-08-21T09:00:00.000Z');
-  const oneSecond = { value: 1, unit: 's', milliseconds: 1_000 } as const;
-
-  /**
-   * An interceptor whose clock the test drives. Each poll advances the clock by
-   * the poll interval, so the waiting period elapses in the loop rather than in
-   * real time and the suite does not spend the wait it is testing.
-   */
-  function parking(notifier?: (notification: ParkedNotification) => void) {
-    let clock = base;
-    return createGateInterceptor({
-      root,
-      config: { ...config, gateWait: oneSecond },
-      tourId: 'tour-3-b-i',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
+  /** A waiting period the fixture's clock crosses in three polls. */
+  function parking(notify?: (notification: ParkedNotification) => void) {
+    return interceptor({
+      gateWaitMs: 1_000,
       attemptCount: 2,
-      buildPreview,
-      pollIntervalMs: 400,
-      now: () => clock,
-      sleep: (ms) =>
-        new Promise((resolve) => {
-          clock = new Date(clock.getTime() + ms);
-          setImmediate(resolve);
-        }),
-      ...(notifier === undefined ? {} : { notify: notifier }),
+      ...(notify === undefined ? {} : { notify }),
+    });
+  }
+
+  async function park(interceptorUnderTest: ReturnType<typeof interceptor>): Promise<void> {
+    await interceptorUnderTest.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
     });
   }
 
   it('leaves the gate pending and stamps parked_at', async () => {
-    const interceptor = parking();
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
-      signal: new AbortController().signal,
-    });
+    const parker = parking();
+    await park(parker);
 
     const entry = list(root)[0] as GateEntry;
     expect(entry.status).toBe('pending');
@@ -336,19 +352,15 @@ describe('gate_wait elapsing parks the tour', () => {
   });
 
   it('records the parking in the audit log, after the entry was enqueued', async () => {
-    const interceptor = parking();
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
-      signal: new AbortController().signal,
-    });
+    const parker = parking();
+    await park(parker);
 
     expect(readAuditLines(root).map((line) => line.event)).toEqual(['enqueued', 'parked']);
   });
 
   it('writes the marker as PARKED carrying the state it interrupted', async () => {
-    const interceptor = parking();
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
-      signal: new AbortController().signal,
-    });
+    const parker = parking();
+    await park(parker);
 
     const read = readMarker(root);
     expect(read.kind).toBe('ok');
@@ -362,10 +374,7 @@ describe('gate_wait elapsing parks the tour', () => {
 
   it('emits the notification, saying what was parked and why', async () => {
     const seen: ParkedNotification[] = [];
-    const interceptor = parking((notification) => seen.push(notification));
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
-      signal: new AbortController().signal,
-    });
+    await park(parking((notification) => seen.push(notification)));
 
     expect(seen).toHaveLength(1);
     expect(seen[0]?.kind).toBe('tour-parked');
@@ -375,23 +384,23 @@ describe('gate_wait elapsing parks the tour', () => {
   });
 
   it('parks anyway when the notifier fails, because the entry is the record', async () => {
-    const interceptor = parking(() => {
+    const parker = parking(() => {
       throw new Error('no surface attached');
     });
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
-      signal: new AbortController().signal,
-    });
+    await park(parker);
 
     expect((list(root)[0] as GateEntry).parkedAt).not.toBeNull();
-    expect(interceptor.outcome().kind).toBe('parked');
+    expect(parker.outcome().kind).toBe('parked');
   });
 
   it('ends the run without an error, and stops the session', async () => {
-    const interceptor = parking();
-    const output = (await interceptor.hook(
+    const parker = parking();
+    const output = (await parker.hook(
       toolCall('Bash', { command: 'git push origin main' }),
       'tu-1',
-      { signal: new AbortController().signal },
+      {
+        signal: new AbortController().signal,
+      },
     )) as SyncHookJSONOutput;
 
     // Parking is a release, not a decision (SDD §3.2): the call does not
@@ -400,7 +409,7 @@ describe('gate_wait elapsing parks the tour', () => {
     expect(permission(output)).toBe('deny');
     expect(output.stopReason).toMatch(/parked/i);
 
-    const outcome = interceptor.outcome();
+    const outcome = parker.outcome();
     expect(outcome.kind).toBe('parked');
     expect(isErrorOutcome(outcome)).toBe(false);
   });
@@ -410,32 +419,20 @@ describe('gate_wait elapsing parks the tour', () => {
   });
 
   it('does not park a gate the owner answers inside the waiting period', async () => {
-    let clock = base;
     let answered = false;
-    const interceptor = createGateInterceptor({
-      root,
-      config: { ...config, gateWait: oneSecond },
-      tourId: 'tour-3-b-i',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
-      buildPreview,
-      pollIntervalMs: 400,
-      now: () => clock,
-      sleep: (ms) =>
-        new Promise((resolve) => {
-          // The owner answers during the first wait, which is still well inside
-          // the period. Deterministic: the decision lands between two reads
-          // rather than racing them.
-          if (!answered) {
-            answered = true;
-            decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
-          }
-          clock = new Date(clock.getTime() + ms);
-          setImmediate(resolve);
-        }),
+    // The owner answers during the first wait, which is still well inside the
+    // period. Deterministic: the decision lands between two reads of the entry
+    // rather than racing them.
+    const answering = interceptor({
+      gateWaitMs: 1_000,
+      onSleep: () => {
+        if (answered) return;
+        answered = true;
+        decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+      },
     });
 
-    const output = (await interceptor.hook(
+    const output = (await answering.hook(
       toolCall('Bash', { command: 'git push origin main' }),
       'tu-1',
       { signal: new AbortController().signal },
@@ -443,7 +440,7 @@ describe('gate_wait elapsing parks the tour', () => {
 
     expect(permission(output)).toBe('allow');
     expect((list(root, { includeResolved: true })[0] as GateEntry).parkedAt).toBeNull();
-    expect(interceptor.outcome()).toEqual({ kind: 'running' });
+    expect(answering.outcome()).toEqual({ kind: 'running' });
   });
 
   it('measures the period from when the gate was raised, not from when the wait began', () => {
@@ -451,43 +448,27 @@ describe('gate_wait elapsing parks the tour', () => {
     // period every restart, or a gate that restarts often enough never parks.
     const entry = { requestedAt: '2026-08-21T09:00:00.000Z' } as GateEntry;
 
-    expect(parkingDeadline(entry, oneSecond)).toBe(new Date('2026-08-21T09:00:01.000Z').getTime());
+    expect(parkingDeadline(entry, { value: 1, unit: 's', milliseconds: 1_000 })).toBe(
+      new Date('2026-08-21T09:00:01.000Z').getTime(),
+    );
   });
 });
 
 describe('the waiting period has two edges and both are named', () => {
-  const base = new Date('2026-08-21T09:00:00.000Z');
-  const oneSecond = { value: 1, unit: 's', milliseconds: 1_000 } as const;
-
   /**
-   * Runs the wait with a clock that starts `offsetMs` from the gate's own
-   * timestamp and never moves again, and reports how many times the loop slept
-   * before it parked. A clock that does not move makes the sleep count the
-   * answer to "which side of the deadline is this instant on".
+   * Runs the wait with a clock that advances `tickMs` per poll, and reports how
+   * many polls it took to park. The sleep count is the answer to "which side of
+   * the deadline is this instant on": with a tick of exactly the period, the
+   * second read lands on the deadline and one sleep is enough.
    */
-  async function sleepsBeforeParking(offsetMs: number): Promise<number> {
-    let slept = 0;
-    const interceptor = createGateInterceptor({
-      root,
-      config: { ...config, gateWait: oneSecond },
-      tourId: 'tour-3-b-i',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
-      buildPreview,
-      pollIntervalMs: 0,
-      now: () => new Date(base.getTime() + slept * offsetMs),
-      sleep: () =>
-        new Promise((resolve) => {
-          slept += 1;
-          setImmediate(resolve);
-        }),
-    });
+  async function sleepsBeforeParking(tickMs: number): Promise<number> {
+    const parker = interceptor({ gateWaitMs: 1_000, pollIntervalMs: 0, tickMs });
 
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+    await parker.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
       signal: new AbortController().signal,
     });
-    expect(interceptor.outcome().kind).toBe('parked');
-    return slept;
+    expect(parker.outcome().kind).toBe('parked');
+    return parker.sleeps();
   }
 
   it('has elapsed at the deadline itself', async () => {
@@ -503,31 +484,16 @@ describe('the waiting period has two edges and both are named', () => {
 
 describe('the tour parked the moment the entry was stamped', () => {
   it('keeps the parked outcome when the marker cannot be written', async () => {
-    let clock = new Date('2026-08-21T09:00:00.000Z');
-    const interceptor = createGateInterceptor({
-      root,
-      config: { ...config, gateWait: { value: 1, unit: 's', milliseconds: 1_000 } },
-      tourId: 'tour-3-b-i',
-      jobIndex: 3,
-      interruptedState: 'EXECUTING',
-      buildPreview,
-      pollIntervalMs: 1_000,
-      now: () => clock,
-      sleep: (ms) =>
-        new Promise((resolve) => {
-          clock = new Date(clock.getTime() + ms);
-          setImmediate(resolve);
-        }),
-    });
+    const parker = interceptor({ gateWaitMs: 1_000, pollIntervalMs: 1_000 });
 
     // The marker's own path is occupied by a directory, so the atomic rename
     // onto it fails while the gate queue beside it keeps working.
     mkdirSync(wardroomPaths(root).stateFile, { recursive: true });
 
-    await interceptor.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+    await parker.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
       signal: new AbortController().signal,
     });
 
-    expect(interceptor.outcome().kind).toBe('parked');
+    expect(parker.outcome().kind).toBe('parked');
   });
 });
