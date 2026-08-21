@@ -168,3 +168,21 @@ export function headSubject(root: string): string | null {
     return null;
   }
 }
+
+/**
+ * Repository-relative paths in the staged set (SDD §4.5).
+ *
+ * Read from the repository rather than from the call that asked to commit: a
+ * commit message says nothing about what is staged, and a check that trusted
+ * the committer's account of its own staged set would be the defect D-55
+ * names, one level down from the green claim D-58 removes.
+ *
+ * `-z` because a path may contain anything, newlines included, and the
+ * newline-separated form quotes those paths into a shape nobody unquotes
+ * correctly the first time.
+ */
+export function stagedPaths(root: string): string[] {
+  assertRepository(root);
+  const listing = git(root, ['diff', '--cached', '--name-only', '-z']);
+  return listing.split('\0').filter((path) => path !== '');
+}

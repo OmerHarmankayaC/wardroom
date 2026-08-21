@@ -198,5 +198,6 @@ export { type InterceptionOutcome, isErrorOutcome, parkingDeadline } from './rol
 export { formatDuration } from './config/duration.js';
 export { GATE_BEARING_STATES } from './state/marker.js';
 export { RUN_DIR_NAME, WARDROOM_DIR_NAME } from './config/paths.js';
-export { commandSegments } from './gates/classify.js';
+export { commandSegments, isCommitCall } from './gates/classify.js';
 export { type PermissionSupplierInput, createPermissionSupplier } from './roles/supplier.js';
+export { stagedPaths } from './state/git.js';

@@ -3,14 +3,15 @@ import type {
   PreToolUseHookInput,
   SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
+import { type CommitOccasion, checkCommit } from '../commit/gate.js';
 import { type Duration, formatDuration } from '../config/duration.js';
 import { ensureRunDir } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
-import { type ToolCallClassification, classifyToolCall } from '../gates/classify.js';
+import { type ToolCallClassification, classifyToolCall, isCommitCall } from '../gates/classify.js';
 import { type Notifier, deliver, parkedNotification } from '../gates/notify.js';
 import { enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
-import { headCommit } from '../state/git.js';
+import { headCommit, stagedPaths } from '../state/git.js';
 import { type StateMarker, type TourState, writeMarker } from '../state/marker.js';
 
 /**
@@ -48,6 +49,17 @@ export interface GateInterceptorInput {
    * which need the project. The orchestrator holds both.
    */
   readonly buildPreview: (classification: ToolCallClassification) => GatePreview;
+  /**
+   * The occasion the orchestrator is currently at, for the commit gate
+   * (§4.5, D-57). Read at the moment of the call rather than captured at
+   * construction: a session commits at the end of a job, and which job that is
+   * changes under the same interceptor.
+   *
+   * Absent means no occasion is known, and a commit is denied on that ground
+   * rather than allowed on it: an orchestrator that cannot say where it is has
+   * no basis for calling anything a boundary.
+   */
+  readonly commitOccasion?: () => CommitOccasion;
   /** Failed verification attempts so far, carried into the marker (FR-1.3). */
   readonly attemptCount?: number;
   /** Where the FR-3.3 notification goes. Absent is a surface that cannot be reached. */
@@ -149,6 +161,24 @@ export function parkingDeadline(entry: GateEntry, gateWait: Duration): number {
 
 /** Nothing to decide: the call is not gate-classified and is not touched. */
 const UNTOUCHED: SyncHookJSONOutput = {};
+
+/**
+ * The hook's answer for a commit the gate refused.
+ *
+ * A denial and not an entry: the commit gate is a machine check, not a TD-2
+ * class, so it raises nothing, writes no audit line and reaches no owner
+ * (§4.5, D-57). What it owes the session is every failing condition at once,
+ * because a session told one reason at a time fixes one thing at a time.
+ */
+function commitRefusal(blocks: readonly string[]): SyncHookJSONOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `The commit gate refused this commit (SDD §4.5, FR-7.1):\n  - ${blocks.join('\n  - ')}`,
+    },
+  };
+}
 
 /**
  * The answer for a gate that could not be raised or could not be read.
@@ -255,9 +285,48 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     };
   }
 
+  /**
+   * Holds a `git commit` while the gate runs (§4.2, §4.5, D-57).
+   *
+   * The staged set is read from the repository, never from the call: a commit
+   * message says nothing about what is staged, and a check that took the
+   * committer's word for its own staged set would be the defect D-55 names.
+   *
+   * A commit that passes falls through untouched rather than being answered
+   * `allow`, so the ordinary permission chain still sees it. The gate's job is
+   * to block, and a pass is not a reason to skip the rest of the chain.
+   */
+  function heldCommit(): SyncHookJSONOutput {
+    if (input.commitOccasion === undefined) {
+      return commitRefusal([
+        'occasion: the orchestrator did not say where it is, and an orchestrator that cannot name the occasion has no basis for calling this a boundary (FR-7.1).',
+      ]);
+    }
+
+    try {
+      const verdict = checkCommit(input.root, input.config, {
+        stagedPaths: stagedPaths(input.root),
+        occasion: input.commitOccasion(),
+      });
+      return verdict.allowed ? UNTOUCHED : commitRefusal(verdict.blocks);
+    } catch (error) {
+      // Fails closed, for the same reason the gate path does: a check that
+      // could not run reported nothing, and a commit created on that silence
+      // is the history nobody can bisect that FR-7.1 exists to prevent.
+      return commitRefusal([
+        `the commit gate could not run: ${error instanceof Error ? error.message : String(error)}`,
+      ]);
+    }
+  }
+
   const hook: HookCallback = async (hookInput) => {
     if (hookInput.hook_event_name !== 'PreToolUse') return UNTOUCHED;
     const call = hookInput as PreToolUseHookInput;
+
+    // The commit gate first, because a commit is not a TD-2 class and the
+    // classifier will answer null for it. Order matters only in that both
+    // questions get asked; no call is both.
+    if (isCommitCall(call.tool_name, call.tool_input)) return heldCommit();
 
     const classification = classifyToolCall(call.tool_name, call.tool_input);
     if (classification === null) return UNTOUCHED;

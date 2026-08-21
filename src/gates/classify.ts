@@ -236,3 +236,31 @@ export function classifyToolCall(
   const path = stringField(toolInput, 'file_path') ?? stringField(toolInput, 'notebook_path');
   return path === null ? null : classifyFileTool(toolName, path);
 }
+
+/**
+ * Whether a call is a `git commit` (SDD §4.2, §4.5, D-57).
+ *
+ * Deliberately not a TD-2 class and deliberately not part of
+ * {@link classifyToolCall}. A commit raises no entry, writes no audit line and
+ * reaches no owner: the commit gate is a machine check, and routing it through
+ * the gate queue would put a question to the owner that the owner has no way
+ * to answer better than the check does.
+ *
+ * It is recognised here rather than in the hook so that the one module that
+ * reads command lines keeps reading them, and so the recogniser is tested
+ * beside the classifier whose blind spots it has to avoid sharing: a
+ * `git commit-tree` is not a commit in this sense, and neither is anything
+ * that merely mentions the word.
+ */
+export function isCommitCall(toolName: string, toolInput: unknown): boolean {
+  if (toolName !== 'Bash') return false;
+  const command = stringField(toolInput, 'command');
+  if (command === null) return false;
+
+  return commandSegments(command).some((segment) =>
+    // `git [-c k=v ...] commit`, with git's own options skipped. The word
+    // boundary matters: `git commit-tree` writes a tree object and creates no
+    // commit anyone reviews, so it is not this.
+    /^git\s+(-\S+(\s+\S+)?\s+)*commit(\s|$)/.test(segment),
+  );
+}
