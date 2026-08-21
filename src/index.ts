@@ -188,3 +188,12 @@ export {
   createGateInterceptor,
   decisionOutcome,
 } from './roles/intercept.js';
+export {
+  type Notifier,
+  type ParkedNotification,
+  deliver,
+  parkedNotification,
+} from './gates/notify.js';
+export { type InterceptionOutcome, isErrorOutcome, parkingDeadline } from './roles/intercept.js';
+export { formatDuration } from './config/duration.js';
+export { GATE_BEARING_STATES } from './state/marker.js';

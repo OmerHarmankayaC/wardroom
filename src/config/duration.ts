@@ -45,3 +45,12 @@ export function parseDuration(text: unknown): Duration | null {
   const unit = match[2] as DurationUnit;
   return { value, unit, milliseconds: value * MILLISECONDS[unit] };
 }
+
+/**
+ * The duration as the contract writes it, `24h`. The grammar has one home
+ * (above) and so does its rendering, so a duration read back to the owner
+ * cannot come out in a form the parser would refuse.
+ */
+export function formatDuration(duration: Duration): string {
+  return `${duration.value}${duration.unit}`;
+}

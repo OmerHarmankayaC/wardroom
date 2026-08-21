@@ -24,8 +24,16 @@ export const TOUR_STATES = [
 ] as const;
 export type TourState = (typeof TOUR_STATES)[number];
 
-/** The three cross-cutting states remember the state they interrupted. */
-const INTERRUPTING_STATES: readonly TourState[] = ['GATED', 'PARKED'];
+/**
+ * The two states that hang on a gate (SDD §3.2).
+ *
+ * One list, two consequences that are the same fact seen twice: a marker in one
+ * of these states must carry the `interrupted_state` it returns to, and a
+ * resume in one of these states has a gate entry to read (§4.4 step 4). `FAILED`
+ * is cross-cutting too but is not here: it carries `attempt_count`, not an
+ * interrupted state, and it waits on a verification rather than on the owner.
+ */
+export const GATE_BEARING_STATES: readonly TourState[] = ['GATED', 'PARKED'];
 
 export interface StateMarker {
   readonly state: TourState;
@@ -117,7 +125,7 @@ function schemaProblem(raw: unknown): string | null {
   if (typeof record.updated_at !== 'string' || record.updated_at === '') {
     return 'updated_at must be a timestamp';
   }
-  if (INTERRUPTING_STATES.includes(record.state) && record.interrupted_state === null) {
+  if (GATE_BEARING_STATES.includes(record.state) && record.interrupted_state === null) {
     return `${record.state} must carry the interrupted_state it returns to (SDD §3.2)`;
   }
   return null;

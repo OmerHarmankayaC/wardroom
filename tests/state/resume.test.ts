@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
+import { decide, enqueue, park } from '../../src/gates/queue.js';
 import {
   type StateMarker,
   type TourState,
@@ -310,5 +311,128 @@ describe('the corrected marker (SDD §4.4 step 5)', () => {
 
     expect(result.marker).toBeNull();
     expect(readMarker(root).kind).toBe('absent');
+  });
+});
+
+/**
+ * A decision recorded while the process was down (SDD §4.4 step 4, D-38).
+ *
+ * The CLI decides against the entry file and needs no loop to do it, so a run
+ * that comes back can find its gate already answered. Applying that answer is
+ * not auto-approval: it is the owner's own decision, made while nobody was
+ * listening. Re-presenting it would ask the owner the same question twice.
+ */
+function raiseGate(at?: Date): string {
+  mkdirSync(wardroomPaths(root).gatesDir, { recursive: true });
+  return enqueue(
+    root,
+    {
+      gateClass: 'push',
+      tourId: 'tour-1',
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      what: 'Run `git push origin main`',
+      why: 'TD-2 classifies git push and remote operations as critical actions',
+      preview: {
+        kind: 'push',
+        commits: [{ hash: 'abc1234', subject: 'feat: something' }],
+        remote: 'origin',
+        branch: 'main',
+      },
+    },
+    at === undefined ? {} : { now: at },
+  ).gateId;
+}
+
+describe('a gate decided while the process was down', () => {
+  it.each(['GATED', 'PARKED'] as const)('re-presents a still-pending gate from %s', (state) => {
+    const gateId = raiseGate();
+    given(state);
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('REPRESENT_GATE');
+    expect(result.gate?.gateId).toBe(gateId);
+    expect(result.gate?.status).toBe('pending');
+  });
+
+  it('re-presents a gate that was parked long ago, never approving it by age', () => {
+    const gateId = raiseGate();
+    park(root, gateId);
+    given('PARKED');
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('REPRESENT_GATE');
+    expect(result.gate?.gateId).toBe(gateId);
+    expect(result.gate?.parkedAt).not.toBeNull();
+  });
+
+  it('applies an approval recorded while nobody was listening', () => {
+    const gateId = raiseGate();
+    decide(root, gateId, 'approved', 'owner');
+    given('PARKED');
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('APPLY_GATE_DECISION');
+    expect(result.gate?.status).toBe('approved');
+    expect(result.state).toBe('PARKED');
+  });
+
+  it('applies a rejection the same way, so the class rejection path can run', () => {
+    const gateId = raiseGate();
+    decide(root, gateId, 'rejected', 'owner', 'not yet');
+    given('GATED');
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('APPLY_GATE_DECISION');
+    expect(result.gate?.status).toBe('rejected');
+    expect(result.gate?.decisionNote).toBe('not yet');
+  });
+
+  it('reads the pending gate, not whichever entry happens to sort last', () => {
+    // Both are raised inside the same second, so their identifiers sort by
+    // their four random characters rather than by the order they were raised
+    // (D-28). The pending one is the gate the state hangs on either way.
+    const sameSecond = new Date('2026-08-21T09:00:00.000Z');
+    const settled = raiseGate(sameSecond);
+    decide(root, settled, 'approved', 'owner');
+    const waiting = raiseGate(sameSecond);
+    given('GATED');
+
+    expect(resume(root).gate?.gateId).toBe(waiting);
+    expect(resume(root).nextAction).toBe('REPRESENT_GATE');
+  });
+
+  it('falls back to the most recently raised when none is pending', () => {
+    const older = raiseGate(new Date('2026-08-21T09:00:00.000Z'));
+    decide(root, older, 'rejected', 'owner');
+    const newer = raiseGate(new Date('2026-08-21T09:00:05.000Z'));
+    decide(root, newer, 'approved', 'owner');
+    given('PARKED');
+
+    expect(resume(root).gate?.gateId).toBe(newer);
+    expect(resume(root).nextAction).toBe('APPLY_GATE_DECISION');
+  });
+
+  it('says so when the marker claims a gate the queue does not have', () => {
+    given('GATED');
+
+    const result = resume(root);
+
+    expect(result.gate).toBeNull();
+    expect(result.events.join('\n')).toMatch(/no gate entry/i);
+  });
+
+  it('consults no gate for a state that is not waiting on one', () => {
+    raiseGate();
+    given('EXECUTING');
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('RESUME_EXECUTION');
+    expect(result.gate).toBeNull();
   });
 });
