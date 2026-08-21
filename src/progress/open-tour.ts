@@ -70,11 +70,32 @@ function cells(row: string): string[] {
   return row.split(/(?<!\\)\|/).slice(1, -1);
 }
 
+/**
+ * One job's table row. Its single home: the block writer and the status
+ * writer both render through it, so a row rewritten in place is byte for byte
+ * the row the writer would have produced.
+ */
+function renderJobRow(number: number, job: TourJob): string {
+  for (const [field, text] of [
+    ['title', job.title],
+    ['criterion', job.criterion],
+  ] as const) {
+    if (text.includes('\n')) {
+      // One row per job is the grammar (SRS §3.5). A cell holding a newline
+      // renders a row across two physical lines, which does not round-trip and
+      // which the status writer would then have to guess at. Refused at the
+      // writer, where the caller can still fix it, rather than written out as
+      // a block that reads back as something else.
+      throw new Error(
+        `job ${number} ${field}: a table cell cannot hold a newline, because one job is one row (SRS §3.5).`,
+      );
+    }
+  }
+  return `| ${number} | ${escapeCell(job.title)} | ${escapeCell(job.criterion)} | ${job.status} |`;
+}
+
 export function renderOpenTourBlock(block: OpenTourBlock): string {
-  const rows = block.jobs.map(
-    (job, index) =>
-      `| ${index + 1} | ${escapeCell(job.title)} | ${escapeCell(job.criterion)} | ${job.status} |`,
-  );
+  const rows = block.jobs.map((job, index) => renderJobRow(index + 1, job));
   return [
     `### Tour ${block.tourId}`,
     '',
@@ -97,24 +118,45 @@ export function renderOpenTourBlock(block: OpenTourBlock): string {
  * one; a blank line ends it.
  */
 function logicalLines(text: string): string[] {
-  const joined: string[] = [];
+  return logicalSpans(text).map((span) => span.text);
+}
+
+/**
+ * One logical line and the physical lines it was built from, as a half-open
+ * range into `text.split('\n')`.
+ *
+ * The span is what lets the status writer edit the same row the parser read.
+ * Without it the two read one table under two grammars: the parser rejoined
+ * wrapped lines, the writer scanned raw ones, and every shape they disagreed
+ * about was updated wrongly in silence.
+ */
+interface LogicalSpan {
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+function logicalSpans(text: string): LogicalSpan[] {
+  const spans: { text: string; start: number; end: number }[] = [];
   let open = false;
-  for (const raw of text.split('\n')) {
+  text.split('\n').forEach((raw, index) => {
     const line = raw.trimEnd();
     if (line.trim() === '') {
       open = false;
-      continue;
+      return;
     }
     const startsNew =
       line.startsWith('###') || line.startsWith('- **') || line.trimStart().startsWith('|');
-    if (!startsNew && open && joined.length > 0) {
-      joined[joined.length - 1] += ` ${line.trim()}`;
-      continue;
+    const previous = spans[spans.length - 1];
+    if (!startsNew && open && previous !== undefined) {
+      previous.text += ` ${line.trim()}`;
+      previous.end = index + 1;
+      return;
     }
-    joined.push(line.trim());
+    spans.push({ text: line.trim(), start: index, end: index + 1 });
     open = true;
-  }
-  return joined;
+  });
+  return spans;
 }
 
 function malformed(field: string, problem: string): OpenTourRead {
@@ -204,7 +246,24 @@ export function parseOpenTourBlock(text: string): OpenTourRead {
 
   const lines = logicalLines(text);
 
-  const heading = lines.find((line) => line.startsWith('### '));
+  const headings = lines.filter((line) => line.startsWith('### '));
+  // "When no tour is open the section states so and holds nothing else"
+  // (SRS §3.5). A statement standing beside a leftover block is a section that
+  // contradicts itself, and picking either side is the guessing §3.5 forbids.
+  if (headings.length > 0 && text.includes(NO_OPEN_TOUR_STATEMENT)) {
+    return malformed(
+      'open tour section',
+      'the section carries both the no-open-tour statement and a tour block; §3.5 allows one or the other, and which is current cannot be read from the file.',
+    );
+  }
+  if (headings.length > 1) {
+    return malformed(
+      'tour heading',
+      `the section carries ${headings.length} tour blocks; one tour is open at a time (SRS §3.5), and reading the first would hide the rest.`,
+    );
+  }
+
+  const heading = headings[0];
   const match = heading === undefined ? null : /^### Tour (\S+)$/.exec(heading);
   if (match === null) {
     return malformed('tour heading', 'the block opens with `### Tour <id>` (SRS §3.5).');
@@ -359,14 +418,30 @@ export function updateJobStatus(
     );
   }
 
-  const lines = [...section.lines];
-  const prefix = `| ${jobNumber} |`;
-  for (let index = section.start; index < section.end; index += 1) {
-    const line = lines[index] as string;
-    if (!line.startsWith(prefix)) continue;
-    lines[index] = line.replace(/\|[^|]*\|\s*$/, `| ${status} |`);
-    atomicWriteFile(progressPath(root, docRoot), lines.join('\n'));
-    return;
+  // The row is located through the same spans the parser read the table with,
+  // so every shape the parser accepts can be updated. Locating it by scanning
+  // raw lines for a literal prefix is what let a wrapped row be missed, or its
+  // criterion cell overwritten with the status word.
+  const body = section.lines.slice(section.start, section.end).join('\n');
+  const span = logicalSpans(body).find(
+    (candidate) =>
+      candidate.text.trimStart().startsWith('|') &&
+      cells(candidate.text)[0] !== undefined &&
+      unescapeCell(cells(candidate.text)[0] as string) === String(jobNumber),
+  );
+  if (span === undefined) {
+    throw new Error(`no table row for job ${jobNumber} was found in the section.`);
   }
-  throw new Error(`no table row for job ${jobNumber} was found in the section.`);
+
+  const job = parsed.block.jobs[jobNumber - 1] as TourJob;
+  const lines = [...section.lines];
+  // A wrapped row collapses to the one line the writer would have written.
+  // The row is one row either way, and re-rendering it from the cells the
+  // parser read is what keeps the criterion intact.
+  lines.splice(
+    section.start + span.start,
+    span.end - span.start,
+    renderJobRow(jobNumber, { ...job, status }),
+  );
+  atomicWriteFile(progressPath(root, docRoot), lines.join('\n'));
 }

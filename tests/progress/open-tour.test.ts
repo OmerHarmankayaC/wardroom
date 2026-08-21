@@ -307,6 +307,94 @@ describe('updateJobStatus', () => {
     expect(changed[0]).toContain('| 2 |');
   });
 
+  /**
+   * The status writer and the parser must read the one table under one
+   * grammar. They did not: the parser rejoined wrapped lines while the writer
+   * scanned raw physical lines for a literal `| N |` prefix, so every shape
+   * the parser accepted and the writer did not went wrong in silence.
+   */
+  describe('over the wrapped rows the parser accepts', () => {
+    function wrappedRow(rows: readonly string[]): string {
+      return [
+        '### Tour 3-a',
+        '',
+        '- **Goal:** g',
+        '- **Based on:** SRS 1.5',
+        '- **Opened:** 2026-08-20',
+        '',
+        '| # | Job | Acceptance criterion | Status |',
+        '|---|---|---|---|',
+        ...rows,
+        '',
+        '- **Do not touch:** x',
+        '- **Stop conditions:** y',
+      ].join('\n');
+    }
+
+    it('moves the status of a row wrapped mid-criterion', () => {
+      writeProgress(
+        progressAround(
+          wrappedRow(['| 1 | A job | A long criterion that', '  wraps here | pending |']),
+        ),
+      );
+
+      updateJobStatus(root, DOC_ROOT, 1, 'done');
+
+      const result = readOpenTour(root, DOC_ROOT);
+      expect(result.kind).toBe('open');
+      if (result.kind !== 'open') return;
+      expect(result.block.jobs[0]?.status).toBe('done');
+      expect(result.block.jobs[0]?.criterion).toBe('A long criterion that wraps here');
+    });
+
+    it('keeps the criterion when the wrap falls after its closing border', () => {
+      // This shape wrote the status word into the criterion cell and left the
+      // status pending: the durable record lost the acceptance criterion, the
+      // one thing SDD §4.4 step 4 resumes a killed tour from.
+      writeProgress(progressAround(wrappedRow(['| 1 | A job | Its criterion |', '  pending |'])));
+
+      updateJobStatus(root, DOC_ROOT, 1, 'done');
+
+      const result = readOpenTour(root, DOC_ROOT);
+      expect(result.kind).toBe('open');
+      if (result.kind !== 'open') return;
+      expect(result.block.jobs[0]?.criterion).toBe('Its criterion');
+      expect(result.block.jobs[0]?.status).toBe('done');
+    });
+
+    it('moves the status of a row written without padding around its pipes', () => {
+      writeProgress(progressAround(wrappedRow(['|1| A job | Its criterion | pending |'])));
+
+      updateJobStatus(root, DOC_ROOT, 1, 'done');
+
+      const result = readOpenTour(root, DOC_ROOT);
+      expect(result.kind).toBe('open');
+      if (result.kind !== 'open') return;
+      expect(result.block.jobs[0]?.status).toBe('done');
+    });
+
+    it('leaves every other row of a wrapped table untouched', () => {
+      writeProgress(
+        progressAround(
+          wrappedRow([
+            '| 1 | First | Its criterion | done |',
+            '| 2 | Second | A criterion that',
+            '  wrapped | pending |',
+            '| 3 | Third | Its criterion | pending |',
+          ]),
+        ),
+      );
+
+      updateJobStatus(root, DOC_ROOT, 2, 'done');
+
+      const result = readOpenTour(root, DOC_ROOT);
+      expect(result.kind).toBe('open');
+      if (result.kind !== 'open') return;
+      expect(result.block.jobs.map((job) => job.status)).toEqual(['done', 'done', 'pending']);
+      expect(result.block.jobs[2]?.criterion).toBe('Its criterion');
+    });
+  });
+
   it('refuses a job number the table does not carry', () => {
     writeProgress(progressAround(renderOpenTourBlock(block)));
 
@@ -317,5 +405,57 @@ describe('updateJobStatus', () => {
     writeProgress(progressAround(NO_OPEN_TOUR_STATEMENT));
 
     expect(() => updateJobStatus(root, DOC_ROOT, 1, 'done')).toThrow(/no tour is open/i);
+  });
+});
+
+/**
+ * SRS §3.5: when no tour is open the section states so "and holds nothing
+ * else", and a block that fails to parse is reported with the failing field,
+ * "never guessed at". Both rules are about the same hazard: a section whose
+ * content contradicts itself must not be resolved by picking a side.
+ */
+describe('a section that contradicts itself is reported, never scavenged', () => {
+  it('refuses a no-open-tour statement standing next to a leftover block', () => {
+    const text = [NO_OPEN_TOUR_STATEMENT, '', renderOpenTourBlock(block)].join('\n');
+
+    const result = parseOpenTourBlock(text);
+
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.field).toBe('open tour section');
+  });
+
+  it('refuses two blocks in one section rather than reading the first', () => {
+    const second = renderOpenTourBlock({ ...block, tourId: 'tour-4' });
+    const text = [renderOpenTourBlock(block), '', second].join('\n');
+
+    const result = parseOpenTourBlock(text);
+
+    expect(result.kind).toBe('malformed');
+    if (result.kind !== 'malformed') return;
+    expect(result.field).toBe('tour heading');
+  });
+});
+
+describe('renderOpenTourBlock refuses a cell it cannot represent', () => {
+  it('refuses a newline in a criterion, which would split the row', () => {
+    // One row per job is the grammar. A cell holding a newline renders a row
+    // across two physical lines, which does not round-trip and which the
+    // status writer would then have to guess at.
+    expect(() =>
+      renderOpenTourBlock({
+        ...block,
+        jobs: [{ title: 'A job', criterion: 'first\nsecond', status: 'pending' }],
+      }),
+    ).toThrow(/newline/);
+  });
+
+  it('refuses a newline in a job title too', () => {
+    expect(() =>
+      renderOpenTourBlock({
+        ...block,
+        jobs: [{ title: 'A\njob', criterion: 'Its criterion', status: 'pending' }],
+      }),
+    ).toThrow(/newline/);
   });
 });
