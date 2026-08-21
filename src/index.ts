@@ -229,3 +229,18 @@ export {
   readUsage,
   usageSummary,
 } from './usage/record.js';
+export {
+  type LastFailure,
+  type PlanningFailureRecord,
+  type VerificationFailureRecord,
+  clearLastFailure,
+  failureEvidence,
+  readLastFailure,
+  writeLastFailure,
+} from './state/last-failure.js';
+export {
+  type DrivePlanningInput,
+  type PlanningResult,
+  type PmSession,
+  drivePlanning,
+} from './loop/planning.js';

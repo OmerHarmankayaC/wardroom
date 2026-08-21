@@ -26,6 +26,7 @@ describe('wardroomPaths', () => {
       configFile: join(root, '.wardroom', 'config.json'),
       runDir: join(root, '.wardroom', 'run'),
       stateFile: join(root, '.wardroom', 'run', 'state.json'),
+      lastFailureFile: join(root, '.wardroom', 'run', 'last-failure.json'),
       usageLog: join(root, '.wardroom', 'run', 'usage.jsonl'),
       // Added by SDD 1.4 §3.0 (BACKLOG D-30): the closure baseline FR-6.1
       // compares against where the document root is untracked. It is a

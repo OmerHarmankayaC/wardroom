@@ -28,6 +28,8 @@ export interface WardroomPaths {
   readonly stateFile: string;
   /** Per canonical document, its version and content hash at the last tour close. */
   readonly docBaselineFile: string;
+  /** The failure the current attempt count was spent on (SDD §3.0, D-48, D-59). */
+  readonly lastFailureFile: string;
   /** The token and cost record, append-only (SDD §3.0, NFR-4, D-74). */
   readonly usageLog: string;
   readonly gatesDir: string;
@@ -46,6 +48,7 @@ export function wardroomPaths(root: string): WardroomPaths {
     runDir,
     stateFile: join(runDir, 'state.json'),
     docBaselineFile: join(runDir, 'doc-baseline.json'),
+    lastFailureFile: join(runDir, 'last-failure.json'),
     usageLog: join(runDir, 'usage.jsonl'),
     gatesDir,
     auditLog: join(gatesDir, 'audit.jsonl'),

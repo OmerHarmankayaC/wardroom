@@ -33,6 +33,16 @@ export type TourEvent =
    */
   | { readonly type: 'plan-complete'; readonly tourId: string }
   /**
+   * A planning attempt whose output did not parse (§3.2, D-50).
+   *
+   * It stays in PLANNING and spends one attempt, exactly as
+   * `verification-failed` spends one out of VERIFYING. The §3.2 table states
+   * the behaviour in prose and names no event for it; the marker nevertheless
+   * carries `attempt_count` and something has to move it, and every marker
+   * write goes through here (D-47).
+   */
+  | { readonly type: 'plan-failed' }
+  /**
    * A job boundary inside EXECUTING: the job is done by the whole definition
    * of done and its commit exists (§4.2, FR-7.1).
    *
@@ -83,6 +93,12 @@ export type TourEvent =
 
 export type TourEventType = TourEvent['type'];
 
+/**
+ * The states that spend the attempt budget, and so the only two that can
+ * raise the gate replacing an indefinite retry (§3.2, FR-1.3, D-50, D-60).
+ */
+const BUDGET_SPENDING_STATES: readonly TourState[] = ['PLANNING', 'FAILED'];
+
 /** The facts the guards need. The attempt budget lives in the contract (SRS §3.1). */
 export interface TransitionRules {
   readonly attemptBudget: number;
@@ -106,7 +122,7 @@ export interface Transition {
  */
 const ACCEPTS: Record<TourState, readonly TourEventType[]> = {
   IDLE: ['open', 'raise-gate'],
-  PLANNING: ['plan-complete', 'raise-gate'],
+  PLANNING: ['plan-complete', 'plan-failed', 'raise-gate'],
   EXECUTING: ['job-boundary', 'jobs-done', 'raise-gate'],
   VERIFYING: ['green', 'verification-failed'],
   CLOSING: ['close', 'raise-gate'],
@@ -203,9 +219,16 @@ function raiseGate(
 
   if (event.gateClass === 'tour-budget') {
     // FR-1.3: the gate replaces an indefinite retry, so it exists only where
-    // the budget is actually spent.
-    if (from !== 'FAILED') {
-      throw new IllegalTransitionError(from, 'raise-gate', 'tour-budget is raised at FAILED only');
+    // the budget is actually spent. Both states that spend it can raise it:
+    // one counter covers planning and verification together (D-50, D-60), and
+    // restricting the gate to FAILED left an unparseable plan with nowhere to
+    // go but around again forever.
+    if (!BUDGET_SPENDING_STATES.includes(from)) {
+      throw new IllegalTransitionError(
+        from,
+        'raise-gate',
+        `tour-budget is raised at ${BUDGET_SPENDING_STATES.join(' and ')} only, which are the states that spend the budget`,
+      );
     }
     if (marker.attemptCount < rules.attemptBudget) {
       throw new IllegalTransitionError(
@@ -345,6 +368,11 @@ export function transition(
       }
       return move({ jobIndex: event.jobIndex });
     }
+    case 'plan-failed':
+      // The counter belongs to the cycle, not to the tour record, which does
+      // not exist yet (D-60): an unparseable plan is a failed attempt in the
+      // same sense as a failed verification (FR-1.3, D-50).
+      return move({ attemptCount: marker.attemptCount + 1 });
     case 'jobs-done':
       return move({ state: 'VERIFYING' });
     case 'green':
