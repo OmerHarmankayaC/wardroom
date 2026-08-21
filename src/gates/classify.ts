@@ -90,8 +90,15 @@ export interface ToolCallClassification {
  */
 const COMMAND_WRAPPERS = /^(sudo|nohup|time|command|exec)\s+/;
 
-/** Segments of a compound command line, so `cd x && git push` is not missed. */
-function commandSegments(command: string): string[] {
+/**
+ * Segments of a compound command line, so `cd x && git push` is not missed,
+ * with any wrapper stripped from the front of each.
+ *
+ * Exported because the permission supplier (../roles/supplier.ts) reads the
+ * same command lines looking for paths, and two readers splitting a command
+ * line their own way would eventually disagree about what the command was.
+ */
+export function commandSegments(command: string): string[] {
   return command
     .split(/&&|\|\||;|\|/)
     .map((segment) => segment.trim().replace(COMMAND_WRAPPERS, '').trim())
