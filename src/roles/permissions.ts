@@ -1,4 +1,6 @@
 import type { ProjectConfig } from '../config/schema.js';
+import { tourLogDirectory, versionCarryingDocuments } from '../documents/set.js';
+import { gateClassesReachableBy } from '../gates/classify.js';
 import type { RoleName, RolePermissions } from './schema.js';
 
 /**
@@ -80,10 +82,78 @@ function allowRules(role: RoleName, config: ProjectConfig): readonly string[] {
   return config.verify.map((command) => `Bash(${command})`);
 }
 
+/** A permission rule this module will not emit, with the reason it will not. */
+export class PermissionRuleRefusedError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'PermissionRuleRefusedError';
+    this.reason = reason;
+  }
+}
+
+/** A rule naming a tool and nothing else, which auto-approves every call to it. */
+function isBareToolName(rule: string): boolean {
+  return !rule.includes('(');
+}
+
+/**
+ * Refuses a bare tool name in an allow list where a gated action is reachable
+ * through that tool (SDD §4.2).
+ *
+ * Exported so a test can feed it a list this module would never generate. It is
+ * also run over what this module does generate, which is the half that keeps
+ * the rule true after somebody edits {@link allowRules} in six months.
+ */
+export function checkAllowRules(role: RoleName, rules: readonly string[]): void {
+  for (const rule of rules) {
+    if (!isBareToolName(rule)) continue;
+    const reachable = gateClassesReachableBy(rule);
+    if (reachable.length === 0) continue;
+
+    throw new PermissionRuleRefusedError(
+      `the ${role} allow list names ${rule} bare, which auto-approves every call to it, ` +
+        `and ${reachable.join(', ')} ${reachable.length === 1 ? 'is a gate class' : 'are gate classes'} ` +
+        `reachable through it. Scope the rule, as in ${rule}(...) (SDD §4.2, D-43).`,
+    );
+  }
+}
+
+/**
+ * The document root, denied one document at a time (D-44, SDD §4.2).
+ *
+ * Enumeration rather than a wildcard, because "the root except PROGRESS" is not
+ * expressible: deny is evaluated before allow and wins, so PROGRESS cannot be
+ * allowed back, and a path glob cannot express negation. The PROGRESS exception
+ * is therefore not an exception in the configuration at all. PROGRESS is simply
+ * not in the set this derives from.
+ *
+ * The set is {@link versionCarryingDocuments}, the same derivation the document
+ * baseline uses (B-13), so the denial and the FR-6.1 version rule stay in step
+ * by construction rather than by two lists being kept in agreement by hand.
+ */
+export function documentDenyRules(config: ProjectConfig): readonly string[] {
+  return [
+    ...versionCarryingDocuments(config.level).map((name) => fileRule(config.docRoot, name)),
+    // The tour logs are canonical and carry no version (SRS §3.2, D-31), so
+    // they are outside the version-carrying set and have to be named
+    // separately. A directory rather than a file: they are written one per
+    // closure and their names are not knowable in advance.
+    fileRule(config.docRoot, tourLogDirectory(), '**'),
+  ];
+}
+
 /** The permission rules for one role under one project contract. */
 export function rolePermissions(role: RoleName, config: ProjectConfig): RolePermissions {
+  const allow = allowRules(role, config);
+  checkAllowRules(role, allow);
+
   return {
-    allow: allowRules(role, config),
-    deny: [RUNTIME_DENY_RULE],
+    allow,
+    // The PM is the writer of the canonical documents (FR-2.1), so the
+    // enumeration reaches the Implementer alone. Denying it to both would
+    // leave the documents with no writer at all.
+    deny: role === 'pm' ? [RUNTIME_DENY_RULE] : [RUNTIME_DENY_RULE, ...documentDenyRules(config)],
   };
 }

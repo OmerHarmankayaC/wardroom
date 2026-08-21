@@ -170,3 +170,10 @@ export {
   type RoleSession,
   buildRoleSession,
 } from './roles/session.js';
+export { GATE_REACHING_TOOLS, gateClassesReachableBy } from './gates/classify.js';
+export {
+  PermissionRuleRefusedError,
+  checkAllowRules,
+  documentDenyRules,
+} from './roles/permissions.js';
+export { tourLogDirectory } from './documents/set.js';

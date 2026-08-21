@@ -21,6 +21,15 @@ export function canonicalDocuments(level: ProjectLevel): readonly string[] {
 }
 
 /**
+ * Where the tour logs live, relative to the document root: `<doc_root>/tours/`
+ * (SRS §3.2). Every level produces them, so the name does not depend on the
+ * level and takes no argument to say so.
+ */
+export function tourLogDirectory(): string {
+  return 'tours';
+}
+
+/**
  * Which canonical documents carry a version and a change log (SRS §3.2,
  * BACKLOG D-31). The specification class does; PROGRESS and the tour logs do
  * not, and FR-6.1's version rule reaches the first list and nothing else.
