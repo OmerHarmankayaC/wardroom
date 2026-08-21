@@ -9,7 +9,7 @@ import { ensureRunDir } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { type ToolCallClassification, classifyToolCall, isCommitCall } from '../gates/classify.js';
 import { type Notifier, deliver, parkedNotification } from '../gates/notify.js';
-import { enqueue, park, show } from '../gates/queue.js';
+import { authorizationFor, consume, enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
 import { headCommit, stagedPaths } from '../state/git.js';
 import { type StateMarker, type TourState, writeMarker } from '../state/marker.js';
@@ -340,6 +340,21 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     const classification = classifyToolCall(call.tool_name, call.tool_input);
     if (classification === null) return UNTOUCHED;
 
+    // An approval standing for exactly this call releases it without asking
+    // again (§3.2, D-61). The session that raised the gate does not survive a
+    // park, so the approved action is taken by a later session; without this,
+    // that session's identical call raises the same gate a second time, which
+    // §4.4 forbids, and the owner is asked a question they already answered.
+    const standing = authorizationFor(input.root, {
+      gateClass: classification.gateClass,
+      what: classification.what,
+      tourId: input.tourId,
+    });
+    if (standing !== null) {
+      consume(input.root, standing.gateId, classification.what, { now: now() });
+      return decisionOutcome(standing);
+    }
+
     // Fails closed. A gate the orchestrator could not raise reported nothing,
     // and a call that proceeds on that silence is precisely the failure the
     // gate exists to prevent: no entry, no audit line, no owner, and a push.
@@ -367,7 +382,16 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
 
     try {
       const waited = await waitForDecision(entry.gateId);
-      return 'decided' in waited ? decisionOutcome(waited.decided) : parkTour(entry.gateId);
+      if (!('decided' in waited)) return parkTour(entry.gateId);
+
+      // The call that raised the gate is the call the approval authorizes, so
+      // it spends it here rather than leaving it standing for the next one. An
+      // approval nobody spent is a standing permission the owner never granted
+      // (FR-3.1, D-61).
+      if (waited.decided.status === 'approved') {
+        consume(input.root, waited.decided.gateId, classification.what, { now: now() });
+      }
+      return decisionOutcome(waited.decided);
     } catch (error) {
       return refusal(classification, error);
     }

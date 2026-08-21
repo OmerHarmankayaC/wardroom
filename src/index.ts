@@ -208,3 +208,4 @@ export {
   runVerification,
 } from './verify/run.js';
 export type { CommitGateOptions } from './commit/gate.js';
+export { type AuthorizationQuery, authorizationFor, consume } from './gates/queue.js';

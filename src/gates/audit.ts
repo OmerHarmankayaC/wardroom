@@ -18,7 +18,13 @@ import { wardroomPaths } from '../config/paths.js';
  * will not.
  */
 
-export const AUDIT_EVENTS = ['enqueued', 'parked', 'decided'] as const;
+/**
+ * `consumed` records the call an approval authorized being made (SDD §3.1,
+ * §3.2, D-61). It is the only evidence that an approval was spent rather than
+ * still standing: the entry schema has no field for it, so the log is not
+ * merely a trail here, it is the record the authorization check reads.
+ */
+export const AUDIT_EVENTS = ['enqueued', 'parked', 'decided', 'consumed'] as const;
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
 
 export interface AuditLine {

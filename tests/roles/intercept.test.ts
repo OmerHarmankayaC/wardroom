@@ -497,3 +497,106 @@ describe('the tour parked the moment the entry was stamped', () => {
     expect(parker.outcome().kind).toBe('parked');
   });
 });
+
+describe('an approval authorizes one call and is consumed by it (D-61)', () => {
+  /** Raises a push gate, has the owner approve it, and lets the call proceed. */
+  async function approvedPush() {
+    let answered = false;
+    const releasing = interceptor({
+      onSleep: () => {
+        if (answered) return;
+        answered = true;
+        decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+      },
+    });
+
+    const output = (await releasing.hook(
+      toolCall('Bash', { command: 'git push origin main' }),
+      'tu-1',
+      { signal: new AbortController().signal },
+    )) as SyncHookJSONOutput;
+
+    return output;
+  }
+
+  it('spends the approval on the very call that raised the gate', async () => {
+    expect(permission(await approvedPush())).toBe('allow');
+
+    expect(readAuditLines(root).map((line) => line.event)).toEqual([
+      'enqueued',
+      'decided',
+      'consumed',
+    ]);
+  });
+
+  it('raises a new gate for a second identical call', async () => {
+    await approvedPush();
+
+    const second = interceptor({ gateWaitMs: 1_000 });
+    await second.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+
+    // Two entries, and the second is not the first being reused: an approval
+    // that outlived its call would be a permanent permission for an action the
+    // owner approved once.
+    expect(list(root, { includeResolved: true })).toHaveLength(2);
+    expect(second.outcome().kind).toBe('parked');
+  });
+
+  it('releases a later call in the same cycle without asking again', async () => {
+    // The session that asked does not survive a park, so the approval is
+    // spent by the session that comes after the decision. Here the entry is
+    // approved with no session waiting on it at all.
+    const raised = interceptor({ gateWaitMs: 1_000 });
+    await raised.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+    const gateId = list(root)[0]?.gateId ?? '';
+    decide(root, gateId, 'approved', 'owner');
+
+    const later = interceptor();
+    const output = (await later.hook(
+      toolCall('Bash', { command: 'git push origin main' }),
+      'tu-2',
+      {
+        signal: new AbortController().signal,
+      },
+    )) as SyncHookJSONOutput;
+
+    expect(permission(output)).toBe('allow');
+    expect(list(root, { includeResolved: true })).toHaveLength(1);
+    expect(readAuditLines(root).filter((line) => line.event === 'consumed')).toHaveLength(1);
+  });
+
+  it('raises a new gate for a call the approval does not name', async () => {
+    const raised = interceptor({ gateWaitMs: 1_000 });
+    await raised.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+    decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+
+    const other = interceptor({ gateWaitMs: 1_000 });
+    await other.hook(toolCall('Bash', { command: 'git push origin release' }), 'tu-2', {
+      signal: new AbortController().signal,
+    });
+
+    expect(list(root, { includeResolved: true })).toHaveLength(2);
+    expect(readAuditLines(root).some((line) => line.event === 'consumed')).toBe(false);
+  });
+
+  it('does not release a call the owner rejected', async () => {
+    const raised = interceptor({ gateWaitMs: 1_000 });
+    await raised.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+    decide(root, list(root)[0]?.gateId ?? '', 'rejected', 'owner');
+
+    const later = interceptor({ gateWaitMs: 1_000 });
+    await later.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-2', {
+      signal: new AbortController().signal,
+    });
+
+    expect(list(root, { includeResolved: true })).toHaveLength(2);
+  });
+});

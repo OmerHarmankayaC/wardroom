@@ -1,5 +1,5 @@
 import type { TourState } from '../state/marker.js';
-import { recordThenAct } from './audit.js';
+import { readAuditLines, recordThenAct } from './audit.js';
 import { mintGateId } from './id.js';
 import { asPreview, previewProblem } from './preview.js';
 import type { GateClass, GateEntry, GatePreview } from './schema.js';
@@ -243,5 +243,102 @@ export function park(root: string, gateId: string, options: QueueOptions = {}): 
       writeEntry(root, parked);
       return parked;
     },
+  );
+}
+
+/**
+ * What a call has to match for an approval to authorize it (SDD §3.2, D-61).
+ *
+ * The class and the `what` line, which the classifier derives from the call
+ * deterministically, so comparing `what` is comparing the call. D-61 says "the
+ * call it recorded verbatim" and no entry field holds a call verbatim, the
+ * `secrets` preview aside (D-54); `what` is what the entry actually records of
+ * it. That gap is reported rather than papered over here.
+ *
+ * `tourId` scopes the authorization to the cycle that raised it. An
+ * unconsumed authorization lapses when the cycle reaches `IDLE`, and this is
+ * how: at `IDLE` the marker carries no tour, so nothing an earlier cycle
+ * approved can match. The lapse needs no event of its own and leaves no
+ * bookkeeping to get wrong.
+ */
+export interface AuthorizationQuery {
+  readonly gateClass: GateClass;
+  readonly what: string;
+  /** The cycle asking. Empty for a call made before any tour record exists (D-45). */
+  readonly tourId: string;
+}
+
+/**
+ * The gates the audit log records as already spent.
+ *
+ * Read once per question rather than once per candidate. Re-reading inside a
+ * loop is not only wasteful: the log is append-only and another process may be
+ * writing to it, so a query that read it repeatedly could judge one entry
+ * against a log that already held a line the next entry was judged without.
+ */
+function spentGates(root: string): Set<string> {
+  const spent = new Set<string>();
+  for (const line of readAuditLines(root)) {
+    if (line.event === 'consumed') spent.add(line.gateId);
+  }
+  return spent;
+}
+
+/**
+ * The approval standing for this call, or null.
+ *
+ * Only an approval authorizes. A rejection authorizes nothing and is not
+ * reused to deny a later identical call either: that would answer for the
+ * owner exactly as reusing an approval would, and §3.2 routes a rejection to a
+ * new job instead.
+ */
+export function authorizationFor(root: string, query: AuthorizationQuery): GateEntry | null {
+  const spent = spentGates(root);
+  const standing = list(root, { includeResolved: true }).filter(
+    (entry) =>
+      entry.status === 'approved' &&
+      entry.gateClass === query.gateClass &&
+      entry.what === query.what &&
+      entry.tourId === query.tourId &&
+      !spent.has(entry.gateId),
+  );
+
+  // Oldest first, so an owner who answered twice has their first answer used
+  // first rather than their most recent one.
+  return standing[0] ?? null;
+}
+
+/**
+ * Spends an approval on the call it authorized (SDD §3.2, D-61).
+ *
+ * The line goes into the audit log and nothing is written to the entry,
+ * because the entry has no field for it and a second home for the fact would
+ * be a second place for it to be wrong. Refused where the entry was never
+ * approved or has already been spent: an authorization used twice is a
+ * standing permission the owner never granted.
+ */
+export function consume(
+  root: string,
+  gateId: string,
+  what: string,
+  options: QueueOptions = {},
+): GateEntry {
+  const entry = show(root, gateId);
+  if (entry.status !== 'approved') {
+    throw new GateRefusedError(
+      `gate ${gateId} is ${entry.status}, and only an approval authorizes a call (FR-3.1, D-61).`,
+    );
+  }
+  if (spentGates(root).has(gateId)) {
+    throw new GateRefusedError(
+      `gate ${gateId} was already spent on the call it authorized; an approval authorizes one call and no more (SDD §3.2, D-61).`,
+    );
+  }
+
+  const ts = (options.now ?? new Date()).toISOString();
+  return recordThenAct(
+    root,
+    { ts, gateId, event: 'consumed', payload: { what, class: entry.gateClass } },
+    () => entry,
   );
 }
