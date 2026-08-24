@@ -216,19 +216,39 @@ export {
   JobDidNotAdvanceError,
   driveExecuting,
 } from './loop/executing.js';
+export {
+  type RunCycleInput,
+  type RunOutcome,
+  type RunSessions,
+  type WipStop,
+  runCycle,
+} from './loop/run.js';
+export {
+  type AssembleSessionInput,
+  type AssembledSession,
+  type QueryFn,
+  type RequiredAttachment,
+  assembleSession,
+  requiredAttachments,
+} from './roles/assembly.js';
 export { PRE_RECORD_GATE_CLASSES } from './gates/schema.js';
 export { appendJsonLine, readJsonLines } from './fs/jsonl.js';
 export {
+  NO_TOKENS,
   READ_CATEGORIES,
   type ReadCategory,
   type TokenTotals,
+  USAGE_LINE_KINDS,
   type UsageLine,
+  type UsageLineKind,
   type UsageQuery,
   type UsageSummary,
+  addTokens,
   appendUsage,
   readUsage,
   usageSummary,
 } from './usage/record.js';
+export { type SessionTotals, UsageMeter, type UsageMeterInput } from './usage/meter.js';
 export {
   type LastFailure,
   type PlanningFailureRecord,

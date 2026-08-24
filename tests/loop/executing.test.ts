@@ -319,6 +319,8 @@ describe('the drive does not do the session s work', () => {
 describe('the usage ceiling ends the tour carried, at a boundary (D-66)', () => {
   function spend(jobIndex: number | null, usd: number): void {
     appendUsage(root, {
+      kind: 'job',
+      sessionId: null,
       ts: '2026-08-21T09:00:00.000Z',
       role: 'implementer',
       state: 'EXECUTING',
@@ -443,6 +445,8 @@ describe('the ceiling at the edges of the job list', () => {
         runJob: async (_job: unknown, index: number) => {
           ran.push(index);
           appendUsage(root, {
+            kind: 'job',
+            sessionId: null,
             ts: '2026-08-21T09:00:00.000Z',
             role: 'implementer',
             state: 'EXECUTING',

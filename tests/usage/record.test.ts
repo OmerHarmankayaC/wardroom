@@ -28,11 +28,13 @@ afterEach(() => {
 /** A metered line. `unmetered()` is the same line with no cost at all. */
 function line(overrides: Partial<UsageLine> = {}): UsageLine {
   return {
+    kind: 'job',
     ts: '2026-08-21T09:00:00.000Z',
     role: 'implementer',
     state: 'EXECUTING',
     tourId: 'tour-9',
     jobIndex: 0,
+    sessionId: null,
     tokens: { input: 1_000, output: 200 },
     usd: 0.5,
     ...overrides,
@@ -52,16 +54,18 @@ function handWritten(...records: string[]): void {
 }
 
 describe('the record is append-only and attributed', () => {
-  it('writes one line per session, under the on-disk field names', () => {
+  it('writes a line under the on-disk field names', () => {
     appendUsage(root, line());
 
     const written = JSON.parse(readFileSync(wardroomPaths(root).usageLog, 'utf8').trim());
     expect(written).toEqual({
+      kind: 'job',
       ts: '2026-08-21T09:00:00.000Z',
       role: 'implementer',
       state: 'EXECUTING',
       tour_id: 'tour-9',
       job_index: 0,
+      session_id: null,
       tokens: { input: 1_000, output: 200 },
       usd: 0.5,
     });
@@ -116,6 +120,112 @@ describe('the record is append-only and attributed', () => {
 
   it('answers with nothing for a repository that has never been metered', () => {
     expect(readUsage(root)).toEqual([]);
+  });
+
+  it('reads a line written before the kinds existed as a job line', () => {
+    // Not a session line. A line whose kind cannot be read must not become the
+    // authority over lines it never reconciled, so the doubt resolves toward
+    // the narrower meaning.
+    handWritten(
+      JSON.stringify({
+        ts: '2026-08-21T09:00:00.000Z',
+        role: 'pm',
+        state: 'PLANNING',
+        tour_id: null,
+        job_index: null,
+        tokens: { input: 1, output: 1 },
+      }),
+    );
+
+    expect(readUsage(root)[0]).toMatchObject({ kind: 'job', sessionId: null });
+  });
+});
+
+describe('a session line is the authority, not another job', () => {
+  /**
+   * Lines the meter did not write (D-55). A round trip through the meter's own
+   * output could not see an assumption the two halves share, and the one that
+   * matters here is whether a session line is added to the job lines it
+   * reconciles or replaces them.
+   */
+  function group(sessionId: string, jobs: readonly number[], session: number | null): string[] {
+    const lines = jobs.map((usd, index) =>
+      JSON.stringify({
+        kind: 'job',
+        ts: '2026-08-21T09:00:00.000Z',
+        role: 'implementer',
+        state: 'EXECUTING',
+        tour_id: 'tour-9',
+        job_index: index,
+        session_id: sessionId,
+        tokens: { input: 10, output: 1 },
+        usd,
+      }),
+    );
+    if (session !== null) {
+      lines.push(
+        JSON.stringify({
+          kind: 'session',
+          ts: '2026-08-21T09:30:00.000Z',
+          role: 'implementer',
+          state: 'EXECUTING',
+          tour_id: 'tour-9',
+          job_index: null,
+          session_id: sessionId,
+          tokens: { input: 100, output: 10 },
+          usd: session,
+          auxiliary: { input: 80, output: 8 },
+        }),
+      );
+    }
+    return lines;
+  }
+
+  it('does not add the session line to the job lines it totals', () => {
+    // Three jobs at 1 each and a session line saying 4: the session spent 4,
+    // of which 3 is attributed to jobs and 1 is auxiliary. Adding them would
+    // report 7 for a session that spent 4.
+    handWritten(...group('session-1', [1, 1, 1], 4));
+
+    const summary = usageSummary(root, { tourId: 'tour-9', authMode: 'api_key' });
+
+    expect(summary).toMatchObject({ kind: 'measured', spentUsd: 4 });
+  });
+
+  it('falls back to the job lines while a session is still running', () => {
+    handWritten(...group('session-1', [1, 1, 1], null));
+
+    const summary = usageSummary(root, { tourId: 'tour-9', authMode: 'api_key' });
+
+    expect(summary).toMatchObject({ kind: 'measured', spentUsd: 3 });
+  });
+
+  it('adds a second session to the first without re-counting the first', () => {
+    // A retry out of FAILED is a second session over the same tour.
+    handWritten(...group('session-1', [1, 1], 3), ...group('session-2', [2], 2.5));
+
+    const summary = usageSummary(root, { tourId: 'tour-9', authMode: 'api_key' });
+
+    expect(summary).toMatchObject({ kind: 'measured', spentUsd: 5.5 });
+  });
+
+  it('keeps the largest job from being read off a session line', () => {
+    // The session line is larger than any job in it. Counted as a job, it
+    // would end the tour a boundary early on a job nobody ran.
+    handWritten(...group('session-1', [1, 1, 1], 4));
+
+    const summary = usageSummary(root, { tourId: 'tour-9', authMode: 'api_key' });
+
+    expect(summary).toMatchObject({ largestJobUsd: 1, jobsMeasured: 3 });
+  });
+
+  it('totals the tokens the same way', () => {
+    handWritten(...group('session-1', [1, 1, 1], 4));
+
+    expect(usageSummary(root, { tourId: 'tour-9', authMode: 'api_key' }).tokens).toEqual({
+      input: 100,
+      output: 10,
+    });
   });
 });
 

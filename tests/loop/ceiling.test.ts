@@ -44,6 +44,8 @@ afterEach(() => {
 
 function spend(jobIndex: number | null, usd: number): void {
   appendUsage(root, {
+    kind: 'job',
+    sessionId: null,
     ts: '2026-08-21T09:00:00.000Z',
     role: 'implementer',
     state: 'EXECUTING',
@@ -107,6 +109,8 @@ describe('the rule is spent plus the largest job so far', () => {
 
   it('reads only this tour', () => {
     appendUsage(root, {
+      kind: 'job',
+      sessionId: null,
       ts: '2026-08-21T09:00:00.000Z',
       role: 'implementer',
       state: 'EXECUTING',
@@ -145,6 +149,8 @@ describe('an inactive meter never fires and never passes silently', () => {
 
   it('reports inactive where the meter is on but nothing carries a cost', () => {
     appendUsage(root, {
+      kind: 'job',
+      sessionId: null,
       ts: '2026-08-21T09:00:00.000Z',
       role: 'implementer',
       state: 'EXECUTING',
