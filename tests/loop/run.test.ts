@@ -207,7 +207,9 @@ beforeEach(() => {
     commits: [],
     pushed: false,
     jobs: [{ title: 'First job', verdict: 'done' }],
+    deviations: [],
     debts: [],
+    auditFindings: [],
     notes: '',
   });
   commit('fixture');

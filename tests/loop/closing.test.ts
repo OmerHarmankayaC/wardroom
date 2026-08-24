@@ -107,7 +107,9 @@ const report: ClosingReport = {
   commits: [],
   pushed: false,
   jobs: [{ title: 'First job', verdict: 'done' }],
+  deviations: [],
   debts: [],
+  auditFindings: [],
   notes: 'nothing else',
 };
 
@@ -237,6 +239,7 @@ describe('document debts are settled, or they raise a gate (§4.6 step 3, D-75)'
   it('hands each settleable debt to the PM', async () => {
     writeReport(root, {
       ...report,
+      deviations: [],
       debts: [{ document: 'SRS.md', section: '1.1', problem: 'a problem', settleable: true }],
     });
     const role = pm();
@@ -249,6 +252,7 @@ describe('document debts are settled, or they raise a gate (§4.6 step 3, D-75)'
   it('raises a scope-change gate for one the PM cannot settle', async () => {
     writeReport(root, {
       ...report,
+      deviations: [],
       debts: [
         { document: 'SDD.md', section: '4.6', problem: 'the order is wrong', settleable: false },
       ],
@@ -270,6 +274,7 @@ describe('document debts are settled, or they raise a gate (§4.6 step 3, D-75)'
     // block first would lose the tour the gate is about.
     writeReport(root, {
       ...report,
+      deviations: [],
       debts: [{ document: 'SDD.md', section: '4.6', problem: 'unsettleable', settleable: false }],
     });
 
@@ -281,6 +286,7 @@ describe('document debts are settled, or they raise a gate (§4.6 step 3, D-75)'
   it('leaves the marker GATED naming the gate it waits on', async () => {
     writeReport(root, {
       ...report,
+      deviations: [],
       debts: [{ document: 'SDD.md', section: '4.6', problem: 'unsettleable', settleable: false }],
     });
 
@@ -395,6 +401,7 @@ describe('the closure commit is one commit, at its own occasion (D-76)', () => {
   it('offers no occasion where a gate sent the closure away', async () => {
     writeReport(root, {
       ...report,
+      deviations: [],
       debts: [{ document: 'SDD.md', section: '4.6', problem: 'unsettleable', settleable: false }],
     });
 

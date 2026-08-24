@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import {
   type ClosingReport,
+  REPORT_PARTS,
   readReport,
   renderReport,
   writeReport,
@@ -41,10 +42,12 @@ const report: ClosingReport = {
     { title: 'First job', verdict: 'done' },
     { title: 'Second job', verdict: 'not done' },
   ],
+  deviations: [],
   debts: [
     { document: 'SRS.md', section: '5.2', problem: 'the rule has no actor', settleable: true },
     { document: 'SDD.md', section: '4.6', problem: 'the order is wrong', settleable: false },
   ],
+  auditFindings: [],
   notes: 'One deviation, small, applied.',
 };
 
@@ -69,7 +72,9 @@ describe('the report round-trips through the file closure reads', () => {
       commits: [],
       pushed: false,
       jobs: [],
+      deviations: [],
       debts: [],
+      auditFindings: [],
       notes: '',
     };
     writeReport(root, empty);
@@ -97,6 +102,10 @@ describe('the reader is judged against reports it did not write', () => {
    * see an assumption both halves share, and the assumption under test is
    * exactly what the two of them agree the grammar is.
    */
+  /** The four parts these cases are not about, present so none is missing. */
+  const OTHER_PARTS =
+    '\n\n## Jobs\n\n| # | Job | Verdict |\n|---|---|---|\n\n## Deviations\n\n| What | Grade | Rationale |\n|---|---|---|\n\n## Document debts\n\n| Document | Section | Problem | Settleable |\n|---|---|---|---|\n\n## Audit findings\n\n| Pattern | Finding |\n|---|---|\n';
+
   function handWritten(body: string): void {
     mkdirSync(wardroomPaths(root).reportsDir, { recursive: true });
     writeFileSync(join(wardroomPaths(root).reportsDir, 'tour-9.md'), body);
@@ -118,11 +127,23 @@ describe('the reader is judged against reports it did not write', () => {
         '|---|---|---|',
         '| 1 | Only job | done |',
         '',
+        '## Deviations',
+        '',
+        '| What | Grade | Rationale |',
+        '|---|---|---|',
+        '| a smaller helper | small | the library cannot represent it |',
+        '',
         '## Document debts',
         '',
         '| Document | Section | Problem | Settleable |',
         '|---|---|---|---|',
         '| SRS.md | 1.1 | a problem | yes |',
+        '',
+        '## Audit findings',
+        '',
+        '| Pattern | Finding |',
+        '|---|---|',
+        '| one fact, many homes | the version is written twice |',
         '',
         '## Notes',
         '',
@@ -136,7 +157,15 @@ describe('the reader is judged against reports it did not write', () => {
       commits: ['1111111', '2222222'],
       pushed: true,
       jobs: [{ title: 'Only job', verdict: 'done' }],
+      deviations: [
+        {
+          what: 'a smaller helper',
+          grade: 'small',
+          rationale: 'the library cannot represent it',
+        },
+      ],
       debts: [{ document: 'SRS.md', section: '1.1', problem: 'a problem', settleable: true }],
+      auditFindings: [{ pattern: 'one fact, many homes', finding: 'the version is written twice' }],
       notes: 'nothing else',
     });
   });
@@ -150,6 +179,73 @@ describe('the reader is judged against reports it did not write', () => {
     expect(() => readReport(root, 'tour-9')).toThrowError(/claims/i);
   });
 
+  it('names every part it requires, so none can be added without a check', () => {
+    expect(REPORT_PARTS).toEqual([
+      'Claims',
+      'Jobs',
+      'Deviations',
+      'Document debts',
+      'Audit findings',
+    ]);
+  });
+
+  for (const part of REPORT_PARTS) {
+    it(`reports a missing ${part} section as missing rather than as empty`, () => {
+      // The five parts D-82 names. A section read as empty because it was not
+      // there passes every check by having nothing to check, and a debt or a
+      // finding that went missing this way is one nobody settles.
+      const full = renderReport({
+        tourId: 'tour-9',
+        commits: [],
+        pushed: false,
+        jobs: [],
+        deviations: [],
+        debts: [],
+        auditFindings: [],
+        notes: '',
+      });
+      handWritten(full.replace(new RegExp(`^## ${part}\\s*$`, 'm'), '## Something else'));
+
+      expect(() => readReport(root, 'tour-9')).toThrowError(new RegExp(part, 'i'));
+    });
+  }
+
+  it('reads a part that is present and empty as empty', () => {
+    // The other half of the rule. An empty section is a real answer, and only
+    // an absent one is refused.
+    handWritten(
+      renderReport({
+        tourId: 'tour-9',
+        commits: [],
+        pushed: false,
+        jobs: [],
+        deviations: [],
+        debts: [],
+        auditFindings: [],
+        notes: '',
+      }),
+    );
+
+    expect(readReport(root, 'tour-9')).toMatchObject({ debts: [], auditFindings: [] });
+  });
+
+  it('reads an unreadable deviation grade as large, the way TD-4 resolves doubt', () => {
+    handWritten(
+      renderReport({
+        tourId: 'tour-9',
+        commits: [],
+        pushed: false,
+        jobs: [],
+        deviations: [{ what: 'something', grade: 'small', rationale: 'who knows' }],
+        debts: [],
+        auditFindings: [],
+        notes: '',
+      }).replace('| something | small |', '| something | medium |'),
+    );
+
+    expect(readReport(root, 'tour-9')?.deviations[0]?.grade).toBe('large');
+  });
+
   it('refuses a report that names a different tour', () => {
     handWritten('# Tour report, tour-8\n\n## Claims\n\n- **Commits:** none\n- **Pushed:** no\n');
 
@@ -158,14 +254,16 @@ describe('the reader is judged against reports it did not write', () => {
 
   it('refuses a push claim that is neither yes nor no', () => {
     handWritten(
-      '# Tour report, tour-9\n\n## Claims\n\n- **Commits:** none\n- **Pushed:** partly\n',
+      `# Tour report, tour-9\n\n## Claims\n\n- **Commits:** none\n- **Pushed:** partly\n${OTHER_PARTS}`,
     );
 
     expect(() => readReport(root, 'tour-9')).toThrowError(/Pushed/);
   });
 
   it('reads an explicit absence of commits rather than guessing at a blank', () => {
-    handWritten('# Tour report, tour-9\n\n## Claims\n\n- **Commits:** none\n- **Pushed:** no\n');
+    handWritten(
+      `# Tour report, tour-9\n\n## Claims\n\n- **Commits:** none\n- **Pushed:** no\n${OTHER_PARTS}`,
+    );
 
     expect(readReport(root, 'tour-9')?.commits).toEqual([]);
   });

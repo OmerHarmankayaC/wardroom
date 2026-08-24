@@ -42,6 +42,28 @@ export interface ReportedDebt {
   readonly settleable: boolean;
 }
 
+/** A deviation from the tour prompt, graded by TD-4. */
+export interface ReportedDeviation {
+  readonly what: string;
+  /**
+   * TD-4's two grades. Small is an implementation detail, applied and
+   * reported; large is anything touching a requirement, a contract or an
+   * acceptance criterion, and stops the tour. Borderline resolves as large.
+   */
+  readonly grade: DeviationGrade;
+  readonly rationale: string;
+}
+
+export const DEVIATION_GRADES = ['small', 'large'] as const;
+export type DeviationGrade = (typeof DEVIATION_GRADES)[number];
+
+/** One finding from the failure-pattern audit run against the tour's diff. */
+export interface ReportedFinding {
+  /** Which pattern it is, in the session's own words. */
+  readonly pattern: string;
+  readonly finding: string;
+}
+
 export interface ClosingReport {
   readonly tourId: string;
   /** Commits the session claims it made. Checked against `.git` at closure. */
@@ -49,9 +71,26 @@ export interface ClosingReport {
   /** Whether the session claims the work was pushed. Checked against the remote. */
   readonly pushed: boolean;
   readonly jobs: readonly ReportedJob[];
+  readonly deviations: readonly ReportedDeviation[];
   readonly debts: readonly ReportedDebt[];
+  readonly auditFindings: readonly ReportedFinding[];
   readonly notes: string;
 }
+
+/**
+ * The five parts D-82 names, in the order they are rendered.
+ *
+ * As data, so the reader's presence check and the writer's layout cannot drift
+ * apart: a part added to the report without its check is a part that can go
+ * missing silently, which is the failure the check exists for.
+ */
+export const REPORT_PARTS = [
+  'Claims',
+  'Jobs',
+  'Deviations',
+  'Document debts',
+  'Audit findings',
+] as const;
 
 export function reportPath(root: string, tourId: string): string {
   return join(wardroomPaths(root).reportsDir, `${tourId}.md`);
@@ -82,6 +121,15 @@ export function renderReport(report: ClosingReport): string {
       (job, index) => `| ${index + 1} | ${cell(job.title)} | ${cell(job.verdict)} |`,
     ),
     '',
+    '## Deviations',
+    '',
+    '| What | Grade | Rationale |',
+    '|---|---|---|',
+    ...report.deviations.map(
+      (deviation) =>
+        `| ${cell(deviation.what)} | ${deviation.grade} | ${cell(deviation.rationale)} |`,
+    ),
+    '',
     '## Document debts',
     '',
     '| Document | Section | Problem | Settleable |',
@@ -89,6 +137,14 @@ export function renderReport(report: ClosingReport): string {
     ...report.debts.map(
       (debt) =>
         `| ${cell(debt.document)} | ${cell(debt.section)} | ${cell(debt.problem)} | ${debt.settleable ? 'yes' : 'no'} |`,
+    ),
+    '',
+    '## Audit findings',
+    '',
+    '| Pattern | Finding |',
+    '|---|---|',
+    ...report.auditFindings.map(
+      (finding) => `| ${cell(finding.pattern)} | ${cell(finding.finding)} |`,
     ),
     '',
     '## Notes',
@@ -165,11 +221,19 @@ export function readReport(root: string, tourId: string): ClosingReport | null {
       `its heading names ${heading[1]}, so this file is another tour's report under this one's name`,
     );
   }
-  if (!/^## Claims\s*$/m.test(text)) {
-    throw new ReportSchemaError(
-      tourId,
-      'it carries no Claims section. A report with no claims is not a report claiming nothing: closure checks the claims against `.git`, and a missing section read as an empty one would pass every check by having nothing to check',
-    );
+  // Every part D-82 names, checked for presence before anything is read out
+  // of it. A missing section and an empty one are different facts and only one
+  // of them is a report: a section read as empty because it was not there
+  // passes every check by having nothing to check, and a debt that went
+  // missing this way is a debt nobody settles. An empty section is written by
+  // rendering its header with no rows, so saying "none" stays available.
+  for (const part of REPORT_PARTS) {
+    if (!new RegExp(`^## ${part}\\s*$`, 'm').test(text)) {
+      throw new ReportSchemaError(
+        tourId,
+        `it carries no ${part} section. The Implementer owes all ${REPORT_PARTS.length} parts (${REPORT_PARTS.join(', ')}); a part that is absent is reported as missing and never read as empty (SDD §4.2, D-82)`,
+      );
+    }
   }
 
   const commits = claim(text, 'Commits', tourId);
@@ -193,11 +257,23 @@ export function readReport(root: string, tourId: string): ClosingReport | null {
             .filter((hash) => hash !== ''),
     pushed: pushed === 'yes',
     jobs: rows(text, 'Jobs').map((row) => ({ title: row[1] ?? '', verdict: row[2] ?? '' })),
+    deviations: rows(text, 'Deviations').map((row) => ({
+      what: row[0] ?? '',
+      // Anything that is not `small` is read as large. TD-4 resolves borderline
+      // cases as large, and an unreadable grade is the most borderline case
+      // there is: a needless gate is cheaper than a deviation that skipped one.
+      grade: row[1] === 'small' ? 'small' : 'large',
+      rationale: row[2] ?? '',
+    })),
     debts: rows(text, 'Document debts').map((row) => ({
       document: row[0] ?? '',
       section: row[1] ?? '',
       problem: row[2] ?? '',
       settleable: row[3] === 'yes',
+    })),
+    auditFindings: rows(text, 'Audit findings').map((row) => ({
+      pattern: row[0] ?? '',
+      finding: row[1] ?? '',
     })),
     notes: notes === null ? '' : text.slice(notes.index + notes[0].length).trim(),
   };

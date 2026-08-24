@@ -283,7 +283,12 @@ export type { ClosureOccasion } from './commit/gate.js';
 export { commitExists, isAncestorOf, remoteCarries } from './state/git.js';
 export {
   type ClosingReport,
+  DEVIATION_GRADES,
+  type DeviationGrade,
+  REPORT_PARTS,
   type ReportedDebt,
+  type ReportedDeviation,
+  type ReportedFinding,
   type ReportedJob,
   ReportSchemaError,
   readReport,
@@ -291,6 +296,13 @@ export {
   reportPath,
   writeReport,
 } from './state/report.js';
+export {
+  ABORTED_HEADING,
+  type RunSessionInput,
+  SessionAbortedError,
+  type SessionRunResult,
+  runSession,
+} from './loop/session.js';
 export { appendPending, tourLogPath } from './loop/tour-log.js';
 export { assertDrivenState } from './loop/state-guard.js';
 export {
