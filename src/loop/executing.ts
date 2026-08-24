@@ -58,11 +58,25 @@ export interface DriveExecutingInput {
   /** The marker as resumption left it. Must read `EXECUTING`. */
   readonly marker: StateMarker;
   readonly session: ImplementerSession;
+  /**
+   * Whether the run has been asked to stop, asked once at each job boundary
+   * (D-83).
+   *
+   * A cooperative stop is only meaningful here, because the job boundary is
+   * the only place where stopping costs nothing: the work is committed, the
+   * marker is current, and the next run resumes from it by the ordinary path
+   * (§4.4). It is asked rather than passed as a flag so that a stop arriving
+   * mid-job is still not acted on until the boundary.
+   */
+  readonly stopRequested?: () => boolean;
   readonly now?: () => Date;
 }
 
 export interface DriveResult {
-  /** The marker as the drive left it: `VERIFYING`, on disk. */
+  /**
+   * The marker as the drive left it, on disk: `VERIFYING`, or `EXECUTING` at
+   * the boundary a cooperative stop ended it on.
+   */
   readonly marker: StateMarker;
   readonly block: OpenTourBlock;
   /** The job indexes this run actually handed to the session, in order. */
@@ -89,6 +103,17 @@ export interface DriveResult {
    * the first is how "no data" gets read as "zero".
    */
   readonly ceiling: CeilingVerdict | null;
+  /**
+   * Whether a cooperative stop ended the run before the job list was done
+   * (D-83).
+   *
+   * Kept apart from `carried`, which it resembles and is not: a carried tour
+   * spent its budget and closes through `CLOSING`, while a stopped one is put
+   * down at a boundary with its tour still open and picked up by the next run.
+   * The marker says the same thing, since a stopped drive never advances to
+   * `VERIFYING`.
+   */
+  readonly stopped: boolean;
 }
 
 /** A job the loop handed to the session and got no progress on. */
@@ -134,6 +159,7 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
   let marker = input.marker;
   let resumedAt = block.jobs.length;
   let carried = false;
+  let stopped = false;
   // Not read before the first boundary. The rule is defined from job 1,
   // because at the first boundary the largest job so far is the job just
   // finished; checking earlier would compare against a largest job of zero.
@@ -172,6 +198,21 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
       carried = true;
       break;
     }
+
+    // The cooperative stop, asked at the same moment and under the same rule
+    // as the ceiling: only where a job is left to be stopped before. A stop
+    // asked on the last boundary stopped nothing, and reporting it as a detach
+    // would leave a finished tour looking unfinished (D-83).
+    if (input.stopRequested?.() === true && index + 1 < block.jobs.length) {
+      stopped = true;
+      break;
+    }
+  }
+
+  // A stopped drive does not advance: the tour keeps its open list and the
+  // next run resumes from this boundary by the ordinary path (§4.4, §5.1).
+  if (stopped) {
+    return { marker, block, ran, resumedAt, carried, disposition: 'closed', ceiling, stopped };
   }
 
   marker = advance(input.root, marker, { type: 'jobs-done' }, rules, now()).marker;
@@ -186,5 +227,6 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
     // (D-35, D-66).
     disposition: carried ? 'carried' : 'closed',
     ceiling,
+    stopped,
   };
 }
