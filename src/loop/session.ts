@@ -54,8 +54,15 @@ export interface RunSessionInput {
   readonly stream: AsyncIterable<SDKMessage>;
   /** Fed every message as it arrives. Absent where the session is not metered. */
   readonly meter?: UsageMeter;
-  /** The state to record the session line under, where a meter is given. */
-  readonly state?: TourState;
+  /**
+   * The state the session ran in, which the session line is attributed to.
+   *
+   * Required, and deliberately without a default. NFR-4 attributes usage by
+   * state, and a default would file a PM planning session's spending under
+   * whichever state was written here as the common case. That is not a missing
+   * value the caller forgot, it is one only the caller knows.
+   */
+  readonly state: TourState;
   readonly now?: () => Date;
 }
 
@@ -72,14 +79,6 @@ export interface SessionRunResult {
   readonly assertCompleted: () => void;
 }
 
-/**
- * Whether a result carries a report.
- *
- * The subtype is not the whole answer: A.4 records that a `success` result
- * with `is_error` true carries the error text rather than the final assistant
- * text, so reading the subtype alone would file an error message as a report
- * and let closure check claims against prose about a failure.
- */
 type SuccessResult = Extract<SDKResultMessage, { subtype: 'success' }>;
 
 /**
@@ -143,7 +142,7 @@ export async function runSession(input: RunSessionInput): Promise<SessionRunResu
   }
 
   // The session line belongs to the session's end, which is here.
-  input.meter?.end(input.state ?? 'EXECUTING');
+  input.meter?.end(input.state);
 
   const errors = errorsFrom(latestResult);
   const path = reportPath(input.root, input.tourId);

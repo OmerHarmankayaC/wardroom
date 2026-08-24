@@ -8,6 +8,7 @@ import { SessionAbortedError, runSession } from '../../src/loop/session.js';
 import { readReport, renderReport, reportPath } from '../../src/state/report.js';
 import { UsageMeter } from '../../src/usage/meter.js';
 import { readUsage } from '../../src/usage/record.js';
+import { assistantMessage, messageStream, resultMessage } from '../support/sdk-messages.js';
 
 /**
  * Consuming one session's stream (SDD §4.2, §4.6, Appendix A.4, D-73, D-82,
@@ -35,66 +36,21 @@ const REPORT_BODY = renderReport({
   notes: 'nothing else',
 });
 
-function assistant(id: string, input: number, output: number): SDKMessage {
-  return {
-    type: 'assistant',
-    session_id: 'session-1',
-    message: {
-      id,
-      usage: {
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-    },
-  } as unknown as SDKMessage;
-}
-
-function success(text: string): SDKMessage {
-  return {
-    type: 'result',
-    subtype: 'success',
-    session_id: 'session-1',
-    result: text,
-    total_cost_usd: 1,
-    usage: { input_tokens: 0, output_tokens: 0 },
-    modelUsage: {
-      'claude-opus-5': {
-        inputTokens: 10,
-        outputTokens: 2,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        webSearchRequests: 0,
-        costUSD: 1,
-        contextWindow: 200_000,
-        maxOutputTokens: 64_000,
-      },
-    },
-  } as unknown as SDKMessage;
-}
-
-function errorResult(...errors: string[]): SDKMessage {
-  return {
-    type: 'result',
-    subtype: 'error_during_execution',
-    session_id: 'session-1',
-    errors,
-    total_cost_usd: 1,
-    usage: { input_tokens: 0, output_tokens: 0 },
-    modelUsage: {},
-  } as unknown as SDKMessage;
-}
-
-function stream(...messages: SDKMessage[]): AsyncIterable<SDKMessage> {
-  return (async function* () {
-    for (const message of messages) yield message;
-  })();
-}
-
 function run(...messages: SDKMessage[]) {
-  return runSession({ root, tourId: TOUR, stream: stream(...messages), now: NOW });
+  return runSession({
+    root,
+    tourId: TOUR,
+    stream: messageStream(...messages),
+    state: 'EXECUTING',
+    now: NOW,
+  });
 }
+
+const assistant = assistantMessage;
+const success = (text: string): SDKMessage =>
+  resultMessage({ text, costUsd: 1, input: 10, output: 2 });
+const errorResult = (...errors: string[]): SDKMessage =>
+  resultMessage({ errors, costUsd: 1, input: 0, output: 0 });
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'wardroom-session-'));
@@ -135,7 +91,7 @@ describe('the report is written when the generator completes', () => {
       yield success(REPORT_BODY);
     })();
 
-    await runSession({ root, tourId: TOUR, stream: watched, now: NOW });
+    await runSession({ root, tourId: TOUR, stream: watched, state: 'EXECUTING', now: NOW });
 
     expect(seen).toEqual(['absent']);
   });
@@ -200,7 +156,14 @@ describe('an error result writes an aborted record instead', () => {
     // A run that failed expensively has not spent nothing.
     const meter = new UsageMeter({ root, role: 'implementer', tourId: TOUR, now: NOW });
 
-    await runSession({ root, tourId: TOUR, stream: stream(errorResult('boom')), meter, now: NOW });
+    await runSession({
+      root,
+      tourId: TOUR,
+      stream: messageStream(errorResult('boom')),
+      meter,
+      state: 'EXECUTING',
+      now: NOW,
+    });
 
     expect(readUsage(root).at(-1)).toMatchObject({ kind: 'session', usd: 1 });
   });
@@ -222,8 +185,9 @@ describe('the meter is fed from the same stream', () => {
     await runSession({
       root,
       tourId: TOUR,
-      stream: stream(assistant('msg-1', 100, 20), success(REPORT_BODY)),
+      stream: messageStream(assistant('msg-1', 100, 20), success(REPORT_BODY)),
       meter,
+      state: 'EXECUTING',
       now: NOW,
     });
 
@@ -232,6 +196,24 @@ describe('the meter is fed from the same stream', () => {
       tokens: { input: 10, output: 2 },
       auxiliary: { input: -90, output: -18 },
     });
+  });
+
+  it('attributes the session line to the state the session ran in', async () => {
+    // NFR-4 attributes usage by state, and only the caller knows which one
+    // this was. A default here would file a PM planning session's spending
+    // under whichever state was written as the common case.
+    const meter = new UsageMeter({ root, role: 'pm', tourId: TOUR, now: NOW });
+
+    await runSession({
+      root,
+      tourId: TOUR,
+      stream: messageStream(success(REPORT_BODY)),
+      meter,
+      state: 'PLANNING',
+      now: NOW,
+    });
+
+    expect(readUsage(root).at(-1)).toMatchObject({ state: 'PLANNING', role: 'pm' });
   });
 
   it('runs without a meter, since not every session is metered', async () => {

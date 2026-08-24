@@ -466,10 +466,10 @@ describe('a stop condition ends with a WIP commit', () => {
     expect(outcome.reason).toMatch(/acceptance criterion/);
   });
 
-  it('makes no WIP commit where no committer was supplied, and says so', async () => {
+  it('asks for no WIP commit where no committer was supplied, and says so', async () => {
     // The loop never runs git itself: the commit is the caller's, gated by
-    // §4.5. An absent committer must leave a stop that says the commit did not
-    // happen, not one that reads as though it did.
+    // §4.5. An absent committer must leave a stop that says nothing was asked
+    // for, not one that reads as though a commit happened.
     writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
     const doubles = sessions();
 
@@ -486,7 +486,7 @@ describe('a stop condition ends with a WIP commit', () => {
     });
 
     expect(outcome.kind).toBe('stopped');
-    expect(outcome.wipCommitted).toBe(false);
+    expect(outcome.wipRequested).toBe(false);
   });
 });
 

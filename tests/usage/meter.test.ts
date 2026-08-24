@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir } from '../../src/config/paths.js';
 import { UsageMeter } from '../../src/usage/meter.js';
 import { readUsage } from '../../src/usage/record.js';
+import {
+  DEFAULT_SESSION,
+  assistantMessage as assistant,
+  resultMessage as result,
+} from '../support/sdk-messages.js';
 
 /**
  * The meter (SDD §3.0, NFR-4, D-74, D-80, D-84, D-86, D-87).
@@ -20,67 +25,8 @@ import { readUsage } from '../../src/usage/record.js';
 
 let root: string;
 
-const SESSION = 'session-1';
+const SESSION = DEFAULT_SESSION;
 const NOW = () => new Date('2026-08-21T10:00:00.000Z');
-
-/** An assistant message carrying one turn's usage, as A.4 describes it. */
-function assistant(id: string, input: number, output: number): SDKMessage {
-  return {
-    type: 'assistant',
-    session_id: SESSION,
-    message: {
-      id,
-      usage: {
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-    },
-  } as unknown as SDKMessage;
-}
-
-/**
- * A result message. `modelUsage` and `total_cost_usd` are cumulative across
- * turns, so each result carries the running total so far, not that turn's.
- */
-function result(
-  options: {
-    readonly input?: number;
-    readonly output?: number;
-    readonly costUsd?: number;
-    readonly mainLoopInput?: number;
-    readonly error?: boolean;
-  } = {},
-): SDKMessage {
-  const input = options.input ?? 0;
-  const output = options.output ?? 0;
-  return {
-    type: 'result',
-    subtype: options.error === true ? 'error_during_execution' : 'success',
-    session_id: SESSION,
-    ...(options.error === true ? { errors: ['it failed'] } : { result: 'a report' }),
-    total_cost_usd: options.costUsd ?? 0,
-    usage: {
-      input_tokens: options.mainLoopInput ?? input,
-      output_tokens: output,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    },
-    modelUsage: {
-      'claude-opus-5': {
-        inputTokens: input,
-        outputTokens: output,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        webSearchRequests: 0,
-        costUSD: options.costUsd ?? 0,
-        contextWindow: 200_000,
-        maxOutputTokens: 64_000,
-      },
-    },
-  } as unknown as SDKMessage;
-}
 
 function meter() {
   return new UsageMeter({ root, role: 'implementer', tourId: 'tour-9', now: NOW });
@@ -250,7 +196,7 @@ describe('the session total is modelUsage on the last result', () => {
     // expensively is not reported as having spent nothing (D-88).
     const usage = meter();
 
-    usage.observe(result({ input: 100, output: 10, costUsd: 2, error: true }));
+    usage.observe(result({ input: 100, output: 10, costUsd: 2, errors: ['it failed'] }));
     usage.end('EXECUTING');
 
     expect(readUsage(root)[0]?.usd).toBe(2);

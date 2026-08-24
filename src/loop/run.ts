@@ -75,7 +75,7 @@ export interface RunCycleInput {
  *
  * One record rather than a discriminated union: every field is meaningful for
  * every ending, and the fields that do not apply are null rather than absent,
- * so a caller reading `wipCommitted` on an ending that made no commit is told
+ * so a caller reading `wipRequested` on an ending that asked for no commit is told
  * `false` instead of `undefined`.
  */
 export interface RunOutcome {
@@ -90,8 +90,16 @@ export interface RunOutcome {
   readonly reason: string | null;
   /** The failure that stopped the cycle, or null. Never thrown past here. */
   readonly error: Error | null;
-  /** Whether the WIP commit a stop condition calls for was actually made. */
-  readonly wipCommitted: boolean;
+  /**
+   * Whether the WIP commit a stop condition calls for was asked for.
+   *
+   * Asked for, not made. The loop runs no git: it hands the stop to the
+   * caller, whose commit is gated by §4.5 and may be refused there, on a clean
+   * tree or on the default branch. Reporting "committed" on the strength of
+   * having called the callback would be a claim about the repository made
+   * without looking at it, which is the habit §4.6 exists to correct.
+   */
+  readonly wipRequested: boolean;
   /** The disposition a closed tour recorded, or null where none closed. */
   readonly disposition: TourDisposition | null;
 }
@@ -114,7 +122,7 @@ function outcome(partial: Partial<RunOutcome> & Pick<RunOutcome, 'kind'>): RunOu
     gateId: null,
     reason: null,
     error: null,
-    wipCommitted: false,
+    wipRequested: false,
     disposition: null,
     ...partial,
   };
@@ -149,16 +157,16 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
 
   const stopWith = async (reason: string, error: Error | null): Promise<RunOutcome> => {
     const changes = workingTreeChanges(root);
-    let wipCommitted = false;
+    let wipRequested = false;
     if (input.commitWip !== undefined) {
       await input.commitWip({
         reason,
         message: `${WIP_SUBJECT_PREFIX} ${reason}`,
         changes,
       });
-      wipCommitted = true;
+      wipRequested = true;
     }
-    return outcome({ kind: 'stopped', marker, visited, reason, error, wipCommitted });
+    return outcome({ kind: 'stopped', marker, visited, reason, error, wipRequested });
   };
 
   for (let step = 0; ; step += 1) {
