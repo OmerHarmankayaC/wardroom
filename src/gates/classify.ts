@@ -57,7 +57,16 @@ export function gateClassesReachableBy(tool: string): readonly GateClass[] {
 export type ClassifiedDetail =
   | { readonly kind: 'push'; readonly remote: string | null; readonly branch: string | null }
   | { readonly kind: 'destructive'; readonly command: string }
-  | { readonly kind: 'secrets'; readonly secret: string; readonly access: 'read' | 'write' };
+  /**
+   * The secret's reference and the call verbatim, and no direction (D-54).
+   *
+   * `access` was here and is gone. It was judged from shell redirection, which
+   * is the only thing a command line says about direction without interpreting
+   * the program, so a command writing by another route was reported as a read.
+   * A field that can only be filled by guessing is worse than an absent one:
+   * the owner reads the call, which is a fact.
+   */
+  | { readonly kind: 'secrets'; readonly secret: string; readonly call: string };
 
 export interface ToolCallClassification {
   readonly gateClass: GateClass;
@@ -180,16 +189,13 @@ function classifyBash(command: string): ToolCallClassification | null {
 
   const secret = secretsPathIn(command);
   if (secret !== null) {
-    // Read or write is judged from a redirection, which is the only thing a
-    // command line says about direction without interpreting the program. A
-    // command that writes by another route is reported as a read against the
-    // right file, which is the safe way round: the owner still sees the exact
-    // command in `what`.
     return {
       gateClass: 'secrets',
       what: `Run \`${command}\``,
       why: 'TD-2 classifies secrets access as a critical action',
-      detail: { kind: 'secrets', secret, access: command.includes('>') ? 'write' : 'read' },
+      // The call verbatim, which is the one field a preview cannot paraphrase
+      // and the one the owner actually decides on (D-54).
+      detail: { kind: 'secrets', secret, call: command },
     };
   }
 
@@ -198,12 +204,15 @@ function classifyBash(command: string): ToolCallClassification | null {
 
 function classifyFileTool(toolName: string, path: string): ToolCallClassification | null {
   if (!isSecretsPath(path)) return null;
-  const access = WRITING_TOOLS.includes(toolName) ? 'write' : 'read';
+  // The tool name says what this one is, unlike a shell command, so the `what`
+  // line still reads naturally. It is wording rather than a preview field: the
+  // preview carries the call, and nothing derives a direction from it (D-54).
+  const call = `${toolName}(${path})`;
   return {
     gateClass: 'secrets',
-    what: `${access === 'write' ? 'Write' : 'Read'} ${path}`,
+    what: `${WRITING_TOOLS.includes(toolName) ? 'Write' : 'Read'} ${path}`,
     why: 'TD-2 classifies secrets access as a critical action',
-    detail: { kind: 'secrets', secret: path, access },
+    detail: { kind: 'secrets', secret: path, call },
   };
 }
 

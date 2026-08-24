@@ -3,7 +3,6 @@ import { raiseTourBudgetGate } from '../gates/tour-budget.js';
 import {
   type LastFailure,
   failedRoute,
-  failureEvidence,
   readLastFailure,
   writeLastFailure,
 } from '../state/last-failure.js';
@@ -71,7 +70,9 @@ export function driveVerifying(input: DriveVerifyingInput): VerifyingResult {
       config: input.config,
       marker: input.marker,
       reason: 'no-definition',
-      evidence: result.reason,
+      // No attempt was spent, so no record exists to carry (D-71, D-81).
+      failure: null,
+      detail: result.reason,
       now,
     });
     return { kind: 'gated', marker: raised.marker, gateId: raised.gateId };
@@ -159,7 +160,7 @@ export function driveFailed(input: DriveFailedInput): FailedResult {
     config: input.config,
     marker: input.marker,
     reason: 'budget-spent',
-    evidence: failureEvidence(failure),
+    failure,
     now,
   });
   return { kind: 'gated', marker: raised.marker, gateId: raised.gateId };

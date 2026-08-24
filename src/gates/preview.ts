@@ -1,4 +1,5 @@
 import { isFilledString, isJsonObject } from '../json/guards.js';
+import { ROLES } from '../roles/schema.js';
 import { TREE_CHANGE_TYPES } from '../state/git.js';
 import { GATE_CLASSES, type GateClass, type GatePreview } from './schema.js';
 
@@ -14,10 +15,15 @@ import { GATE_CLASSES, type GateClass, type GatePreview } from './schema.js';
  */
 
 /** Reports a missing or blank string field. */
-function checkText(source: Record<string, unknown>, field: string, problems: string[]): void {
+function checkText(
+  source: Record<string, unknown>,
+  field: string,
+  problems: string[],
+  path = 'preview',
+): void {
   if (!isFilledString(source[field])) {
     problems.push(
-      `preview.${field}: must be a non-empty string, describing what the owner approves.`,
+      `${path}.${field}: must be a non-empty string, describing what the owner approves.`,
     );
   }
 }
@@ -108,15 +114,32 @@ function checkDestructive(preview: Record<string, unknown>, problems: string[]):
 
 function checkSecrets(preview: Record<string, unknown>, problems: string[]): void {
   checkText(preview, 'secret', problems);
-  checkText(preview, 'purpose', problems);
-  if (preview.access !== 'read' && preview.access !== 'write') {
-    problems.push('preview.access: must be read or write.');
+  checkText(preview, 'call', problems);
+  if (!(ROLES as readonly unknown[]).includes(preview.role)) {
+    problems.push(`preview.role: must be one of ${ROLES.join(', ')} (D-54).`);
   }
-  // SDD §3.1 says which secret and for what purpose, never the value. A
-  // preview carrying one would put a secret into a file whose whole job is to
-  // be read by a human and kept until it is answered.
+  // Null is a fact here, that the request came from no numbered job, and it is
+  // the one form of absence this field allows (D-32, D-70).
+  if (preview.job !== null && !isFilledString(preview.job)) {
+    problems.push(
+      'preview.job: must name the job the request was raised from, or be null where there is none (D-54).',
+    );
+  }
+  // SDD §3.1 says which secret, never the value. A preview carrying one would
+  // put a secret into a file whose whole job is to be read by a human and kept
+  // until it is answered.
   if ('value' in preview) {
     problems.push('preview.value: a secrets preview never carries the secret itself (SDD §3.1).');
+  }
+  // The two fields D-54 removed. Refused rather than ignored: a preview still
+  // carrying them was built against the old contract, and the owner would be
+  // reading a purpose nothing could derive.
+  for (const dropped of ['purpose', 'access'] as const) {
+    if (dropped in preview) {
+      problems.push(
+        `preview.${dropped}: removed by D-54, because no purpose is derivable from a tool call and the direction is only guessable from shell redirection. The job and the call carry what this tried to say.`,
+      );
+    }
   }
 }
 
@@ -128,7 +151,49 @@ function checkTourBudget(preview: Record<string, unknown>, problems: string[]): 
   if (!Number.isInteger(preview.attemptCount) || (preview.attemptCount as number) < 0) {
     problems.push('preview.attemptCount: must be the number of attempts made, zero or more.');
   }
-  checkText(preview, 'lastFailureOutput', problems);
+
+  const failure = preview.failure;
+  if (failure === null) {
+    // Two different facts, and `attemptCount` is what tells them apart, so
+    // neither needs a field of its own: zero attempts means nothing was run
+    // and no record was ever written (D-71), while a spent budget with no
+    // record means the record did not survive the process that made it (§4.4).
+    // Both are determinate answers about the evidence rather than fields
+    // nobody filled, and a surface renders the difference (§5.2).
+    return;
+  }
+  if (!isJsonObject(failure)) {
+    problems.push(
+      'preview.failure: must be the last-failure record in its own shape, verification or planning (D-59, D-81).',
+    );
+    return;
+  }
+  if (!Number.isInteger(failure.attempt) || (failure.attempt as number) < 0) {
+    problems.push('preview.failure.attempt: must name the attempt it belongs to (D-59).');
+  }
+  if (failure.kind === 'verification') {
+    checkText(failure, 'command', problems, 'preview.failure');
+    if (!Number.isInteger(failure.exitCode)) {
+      problems.push('preview.failure.exitCode: must be the command exit code (D-59).');
+    }
+    // Empty is allowed and is the whole point of D-81: a command can fail
+    // while printing nothing, which §3.1's cardinality rule already said, and
+    // the previous shape refused exactly that case.
+    if (typeof failure.output !== 'string') {
+      problems.push(
+        'preview.failure.output: must be the command output, which may be empty (§3.1, D-81).',
+      );
+    }
+    return;
+  }
+  if (failure.kind === 'planning') {
+    checkText(failure, 'field', problems, 'preview.failure');
+    checkText(failure, 'problem', problems, 'preview.failure');
+    return;
+  }
+  problems.push(
+    'preview.failure.kind: must be verification or planning, the two shapes the record has (D-59).',
+  );
 }
 
 function checkDirtyTree(preview: Record<string, unknown>, problems: string[]): void {

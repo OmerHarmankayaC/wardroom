@@ -86,15 +86,29 @@ describe('touching the secrets file classifies as secrets', () => {
     const found = classify('Read', { file_path: '/repo/.env' });
 
     expect(found?.gateClass).toBe('secrets');
-    expect(found?.detail).toEqual({ kind: 'secrets', secret: '/repo/.env', access: 'read' });
+    expect(found?.detail).toEqual({
+      kind: 'secrets',
+      secret: '/repo/.env',
+      call: 'Read(/repo/.env)',
+    });
   });
 
-  it('classifies writing it as a write, not as a read', () => {
+  it('carries the call rather than a direction it would have to guess (D-54)', () => {
+    // The direction was derived from shell redirection, so a command writing
+    // by another route was reported as a read. The call is a fact; the
+    // direction was not.
     expect(classify('Write', { file_path: '/repo/.env.production' })?.detail).toEqual({
       kind: 'secrets',
       secret: '/repo/.env.production',
-      access: 'write',
+      call: 'Write(/repo/.env.production)',
     });
+  });
+
+  it('still says read or write in the line the owner reads', () => {
+    // Dropped from the preview, not from the wording: a tool name does say
+    // which it is, and the what line is prose rather than evidence.
+    expect(classify('Write', { file_path: '/repo/.env' })?.what).toMatch(/^Write /);
+    expect(classify('Read', { file_path: '/repo/.env' })?.what).toMatch(/^Read /);
   });
 
   it('does not classify the shape file, which carries no value', () => {

@@ -266,7 +266,13 @@ describe('exhaustion raises the tour-budget gate, naming no tour (D-50, D-70)', 
     const preview = list(root)[0]?.preview;
     expect(preview?.kind).toBe('tour-budget');
     expect(preview?.kind === 'tour-budget' && preview.attemptCount).toBe(2);
-    expect(preview?.kind === 'tour-budget' && preview.lastFailureOutput).toMatch(/did not parse/);
+    // The record in its own shape, so the owner sees which field failed and
+    // why, rather than one sentence with both flattened into it (D-81).
+    expect(preview?.kind === 'tour-budget' && preview.failure).toMatchObject({
+      kind: 'planning',
+      field: expect.any(String),
+      problem: expect.any(String),
+    });
   });
 
   it('raises the gate without planning again where the budget is already spent', async () => {

@@ -180,7 +180,10 @@ describe('a missing definition raises the gate at once, without a retry (D-71)',
 
     const preview = list(root)[0]?.preview;
     expect(preview?.kind).toBe('tour-budget');
-    expect(preview?.kind === 'tour-budget' && preview.lastFailureOutput).toMatch(/no .?verify/);
+    // No attempt was spent, so there is no record to carry, and the reason
+    // travels in the entry's why line instead (D-71, D-81).
+    expect(preview?.kind === 'tour-budget' && preview.failure).toBeNull();
+    expect(list(root)[0]?.why).toMatch(/no .?verify/);
   });
 
   it('names the tour, because this one is raised from inside it', () => {
@@ -235,7 +238,11 @@ describe('FAILED re-derives from the record, never from memory (§4.4)', () => {
     expect(result.kind).toBe('gated');
     expect(result.marker.state).toBe('GATED');
     const preview = list(root)[0]?.preview;
-    expect(preview?.kind === 'tour-budget' && preview.lastFailureOutput).toMatch(/3 tests failed/);
+    expect(
+      preview?.kind === 'tour-budget' &&
+        preview.failure?.kind === 'verification' &&
+        preview.failure.output,
+    ).toMatch(/3 tests failed/);
     expect(preview?.kind === 'tour-budget' && preview.attemptCount).toBe(2);
   });
 
@@ -276,7 +283,13 @@ describe('FAILED re-derives from the record, never from memory (§4.4)', () => {
 
     expect(result.kind).toBe('gated');
     const preview = list(root)[0]?.preview;
-    expect(preview?.kind === 'tour-budget' && preview.lastFailureOutput).toMatch(/did not parse/);
+    // The record in its own shape, so the owner sees which field failed and
+    // why, rather than one sentence with both flattened into it (D-81).
+    expect(preview?.kind === 'tour-budget' && preview.failure).toMatchObject({
+      kind: 'planning',
+      field: expect.any(String),
+      problem: expect.any(String),
+    });
   });
 
   it('refuses to drive from a state that is not FAILED', () => {

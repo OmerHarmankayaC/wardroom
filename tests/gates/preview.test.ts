@@ -37,13 +37,20 @@ const presentable: PresentableSet = {
   secrets: {
     kind: 'secrets',
     secret: 'ANTHROPIC_API_KEY',
-    access: 'read',
-    purpose: 'start the Implementer session',
+    role: 'implementer',
+    job: 'Assemble the loop',
+    call: 'Bash(echo $ANTHROPIC_API_KEY)',
   },
   'tour-budget': {
     kind: 'tour-budget',
     attemptCount: 3,
-    lastFailureOutput: '2 tests failed in tests/gates/queue.test.ts',
+    failure: {
+      kind: 'verification',
+      attempt: 3,
+      command: 'npm run test',
+      exitCode: 1,
+      output: '2 tests failed in tests/gates/queue.test.ts',
+    },
   },
   'dirty-tree': {
     kind: 'dirty-tree',
@@ -204,5 +211,144 @@ describe('previewProblem', () => {
 
   it('refuses a class that is not a TD-2 gate class', () => {
     expect(previewProblem('rollback' as GateClass, {})).toContain('class');
+  });
+});
+
+/**
+ * T-9's two shapes, checked against entries written here by hand (D-55).
+ *
+ * Both previews had fallen behind their decisions for two document versions,
+ * and the reason nothing caught it is that the only previews under test were
+ * ones this codebase built. So every case below is a literal, including the
+ * shapes the old contract produced, which must now be refused rather than
+ * quietly accepted.
+ */
+describe('the secrets preview carries facts and no account of intent (D-54)', () => {
+  const secrets = (overrides: Record<string, unknown> = {}): unknown => ({
+    kind: 'secrets',
+    secret: 'ANTHROPIC_API_KEY',
+    role: 'implementer',
+    job: 'Assemble the loop',
+    call: 'Bash(echo $ANTHROPIC_API_KEY)',
+    ...overrides,
+  });
+
+  it('accepts the reference, the role, the job and the call', () => {
+    expect(previewProblem('secrets', secrets())).toBeNull();
+  });
+
+  it('accepts a null job, since a request can precede any numbered job', () => {
+    expect(previewProblem('secrets', secrets({ job: null }))).toBeNull();
+  });
+
+  for (const field of ['secret', 'role', 'call'] as const) {
+    it(`refuses a preview with no ${field}`, () => {
+      expect(previewProblem('secrets', secrets({ [field]: undefined }))).toMatch(field);
+    });
+  }
+
+  it('refuses a role that is not one of the two', () => {
+    expect(previewProblem('secrets', secrets({ role: 'owner' }))).toMatch(/role/);
+  });
+
+  it('refuses the purpose field D-54 removed', () => {
+    // Not ignored. A preview still carrying it was built against the old
+    // contract, and the owner would be reading a purpose nothing derived.
+    expect(previewProblem('secrets', secrets({ purpose: 'start the session' }))).toMatch(/purpose/);
+  });
+
+  it('refuses the access field D-54 removed', () => {
+    expect(previewProblem('secrets', secrets({ access: 'read' }))).toMatch(/access/);
+  });
+
+  it('still refuses a preview carrying the secret itself', () => {
+    expect(previewProblem('secrets', secrets({ value: 'sk-ant-000' }))).toMatch(/value/);
+  });
+
+  it('refuses the whole shape the old contract produced', () => {
+    expect(
+      previewProblem('secrets', {
+        kind: 'secrets',
+        secret: 'ANTHROPIC_API_KEY',
+        access: 'read',
+        purpose: 'start the Implementer session',
+      }),
+    ).not.toBeNull();
+  });
+});
+
+describe('the tour-budget preview carries the record in its own shape (D-81)', () => {
+  const verification = (overrides: Record<string, unknown> = {}): unknown => ({
+    kind: 'tour-budget',
+    attemptCount: 3,
+    failure: {
+      kind: 'verification',
+      attempt: 3,
+      command: 'npm run test',
+      exitCode: 1,
+      output: '2 tests failed',
+      ...overrides,
+    },
+  });
+
+  it('accepts a verification record', () => {
+    expect(previewProblem('tour-budget', verification())).toBeNull();
+  });
+
+  it('accepts an empty output, which the old shape refused', () => {
+    // §3.1's cardinality rule already said so: a command can fail while
+    // printing nothing, and that case could not be presented at all before.
+    expect(previewProblem('tour-budget', verification({ output: '' }))).toBeNull();
+  });
+
+  it('accepts a planning record, which the old shape could not carry', () => {
+    // A planning failure has no command and no exit code, so a flattened
+    // output string had nowhere to put one.
+    expect(
+      previewProblem('tour-budget', {
+        kind: 'tour-budget',
+        attemptCount: 3,
+        failure: {
+          kind: 'planning',
+          attempt: 3,
+          field: 'jobs',
+          problem: 'the table has no rows',
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('accepts a null record where nothing was spent', () => {
+    expect(
+      previewProblem('tour-budget', { kind: 'tour-budget', attemptCount: 0, failure: null }),
+    ).toBeNull();
+  });
+
+  it('refuses a record whose kind is neither of the two shapes', () => {
+    expect(
+      previewProblem('tour-budget', {
+        kind: 'tour-budget',
+        attemptCount: 1,
+        failure: { kind: 'something-else', attempt: 1 },
+      }),
+    ).toMatch(/kind/);
+  });
+
+  it('refuses a verification record with no command', () => {
+    expect(previewProblem('tour-budget', verification({ command: undefined }))).toMatch(/command/);
+  });
+
+  it('refuses a record that does not name its attempt', () => {
+    expect(previewProblem('tour-budget', verification({ attempt: undefined }))).toMatch(/attempt/);
+  });
+
+  it('refuses the flattened shape the old contract produced', () => {
+    expect(
+      previewProblem('tour-budget', {
+        kind: 'tour-budget',
+        attemptCount: 3,
+        lastFailureOutput: '2 tests failed',
+      }),
+    ).not.toBeNull();
   });
 });

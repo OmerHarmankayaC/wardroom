@@ -61,14 +61,27 @@ function previewFor(gateClass: GateClass): EnqueueRequest['preview'] {
     case 'destructive':
       return { kind: 'destructive', command: 'rm -rf build', affects: ['build'] };
     case 'secrets':
-      // The shape the code carries. SDD §3.1 (D-54) describes a different one,
-      // which is a divergence this job reports rather than repairs.
-      return { kind: 'secrets', secret: '.env', access: 'read', purpose: 'reading it' };
+      return {
+        kind: 'secrets',
+        secret: '.env',
+        role: 'implementer',
+        job: 'Assemble the loop',
+        call: 'Read(.env)',
+      };
     case 'tour-budget':
-      // Non-empty, though SDD §3.1 permits an empty output here. The preview
-      // contract refuses one today, which is a separate defect from this job
-      // and is reported rather than fixed inside it.
-      return { kind: 'tour-budget', attemptCount: 3, lastFailureOutput: '3 tests failed' };
+      // The output is empty on purpose: §3.1 permits it, and the shape this
+      // preview used to carry refused exactly that case (D-81).
+      return {
+        kind: 'tour-budget',
+        attemptCount: 3,
+        failure: {
+          kind: 'verification',
+          attempt: 3,
+          command: 'npm run test',
+          exitCode: 1,
+          output: '',
+        },
+      };
     case 'dirty-tree':
       return { kind: 'dirty-tree', changes };
   }

@@ -1,4 +1,6 @@
+import type { RoleName } from '../roles/schema.js';
 import type { TreeChange } from '../state/git.js';
+import type { LastFailure } from '../state/last-failure.js';
 import type { TourState } from '../state/marker.js';
 
 /**
@@ -69,18 +71,52 @@ export interface DestructivePreview {
   readonly affects: readonly string[];
 }
 
-/** Which secret, read or write, and for what purpose. Never the value (SDD §3.1). */
+/**
+ * Which secret, who asked, from which job, and the call verbatim. Never the
+ * value (SDD §3.1, D-54).
+ *
+ * `purpose` and the read/write direction were fields here and are gone. No
+ * purpose is derivable from a tool call and the direction is only guessable
+ * from shell redirection, and every named field is mandatory (D-32), so the
+ * implementation had to invent something to satisfy the contract. The owner
+ * reads the purpose off the job and the call, which are facts, rather than off
+ * a sentence the tool composed about intent it could not see.
+ */
 export interface SecretsPreview {
   readonly kind: 'secrets';
+  /** The secret's reference: a name or a path, never the value. */
   readonly secret: string;
-  readonly access: 'read' | 'write';
-  readonly purpose: string;
+  readonly role: RoleName;
+  /** The job it was raised from, or null before any tour record exists. */
+  readonly job: string | null;
+  /** The requesting call, as made. The one field that cannot be paraphrased. */
+  readonly call: string;
 }
 
+/**
+ * The attempt count and the failure the budget was spent on (SDD §3.1, D-81).
+ *
+ * The record travels in its own shape rather than flattened to a string. A
+ * planning failure has no command and no exit code, so a flattened
+ * `lastFailureOutput` could not carry one at all, and rendering the record to
+ * text here would be a formatting decision made in the wrong place: the
+ * preview is what a surface formats for the owner (§5.2).
+ */
 export interface TourBudgetPreview {
   readonly kind: 'tour-budget';
   readonly attemptCount: number;
-  readonly lastFailureOutput: string;
+  /**
+   * The failure the budget was spent on, or null where there is no record.
+   *
+   * Null covers two facts, and `attemptCount` is what tells them apart, so
+   * neither needs a field of its own: zero attempts means nothing was run and
+   * no record was ever written, which is the missing green definition (D-71);
+   * a spent budget with no record means the record did not survive the process
+   * that made it (§4.4). Both are determinate answers about the evidence
+   * rather than fields nobody filled, and a surface renders the difference
+   * (§5.2).
+   */
+  readonly failure: LastFailure | null;
 }
 
 /**

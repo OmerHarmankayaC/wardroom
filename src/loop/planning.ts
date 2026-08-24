@@ -1,12 +1,7 @@
 import type { ProjectConfig } from '../config/schema.js';
 import { raiseTourBudgetGate } from '../gates/tour-budget.js';
 import { type OpenTourBlock, readOpenTour } from '../progress/open-tour.js';
-import {
-  type LastFailure,
-  failureEvidence,
-  readLastFailure,
-  writeLastFailure,
-} from '../state/last-failure.js';
+import { type LastFailure, readLastFailure, writeLastFailure } from '../state/last-failure.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker } from '../state/marker.js';
 import { assertDrivenState } from './state-guard.js';
@@ -140,7 +135,7 @@ export async function drivePlanning(input: DrivePlanningInput): Promise<Planning
         config: input.config,
         marker,
         reason: 'budget-spent',
-        evidence: failureEvidence(failure),
+        failure,
         now: now(),
       });
       return { kind: 'gated', marker: raised.marker, gateId: raised.gateId, failure };
