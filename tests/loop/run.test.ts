@@ -143,6 +143,29 @@ function head(): string {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 }
 
+/**
+ * Writes a marker and the block that agrees with it (SDD §4.4, D-96, D-100).
+ *
+ * Resumption compares two records and lets neither correct the other, so a
+ * fixture that wrote a marker at job 3 against a block whose rows were all
+ * pending would be a fixture the cross-check is right to stop on. The rows the
+ * marker says are behind it are marked done here, which is what a tour that
+ * reached that boundary would have left.
+ */
+function given(overrides: Partial<StateMarker>): void {
+  const at = overrides.jobIndex ?? 0;
+  if (overrides.tourId != null) {
+    writeProgress({
+      ...block,
+      jobs: block.jobs.map((job, index) => ({
+        ...job,
+        status: index < at ? 'done' : job.status,
+      })),
+    });
+  }
+  writeMarker(root, marker(overrides));
+}
+
 function marker(overrides: Partial<StateMarker>): StateMarker {
   return {
     state: 'IDLE',
@@ -272,7 +295,7 @@ afterEach(() => {
 
 describe('the loop calls the driver the marker names', () => {
   it('drives EXECUTING from a marker that reads EXECUTING', async () => {
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -284,7 +307,7 @@ describe('the loop calls the driver the marker names', () => {
   });
 
   it('drives VERIFYING from a marker that reads VERIFYING, without re-running the jobs', async () => {
-    writeMarker(root, marker({ state: 'VERIFYING', tourId: TOUR, jobIndex: 3 }));
+    given({ state: 'VERIFYING', tourId: TOUR, jobIndex: 3 });
     const doubles = sessions();
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -294,7 +317,7 @@ describe('the loop calls the driver the marker names', () => {
   });
 
   it('drives FAILED from a marker that reads FAILED', async () => {
-    writeMarker(root, marker({ state: 'FAILED', tourId: TOUR, jobIndex: 3, attemptCount: 1 }));
+    given({ state: 'FAILED', tourId: TOUR, jobIndex: 3, attemptCount: 1 });
     const doubles = sessions();
 
     const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -308,7 +331,7 @@ describe('the loop calls the driver the marker names', () => {
 
 describe('one invocation is one cycle', () => {
   it('runs IDLE to IDLE and returns rather than planning again', async () => {
-    writeMarker(root, marker({ state: 'IDLE' }));
+    given({ state: 'IDLE' });
     const doubles = sessions();
 
     const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -326,7 +349,7 @@ describe('one invocation is one cycle', () => {
   });
 
   it('hands each job to the session exactly once over that cycle', async () => {
-    writeMarker(root, marker({ state: 'IDLE' }));
+    given({ state: 'IDLE' });
     const doubles = sessions();
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -337,7 +360,7 @@ describe('one invocation is one cycle', () => {
   it('does not open a second tour after reaching IDLE', async () => {
     // The block is cleared at closure, so a loop that carried on would find no
     // tour and plan one. Nothing may call the PM after IDLE is reached.
-    writeMarker(root, marker({ state: 'IDLE' }));
+    given({ state: 'IDLE' });
     const doubles = sessions({ planWrites: true });
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -360,16 +383,13 @@ describe('the exits §3.2 defines', () => {
         sections: [{ document: 'SRS', section: '§4', diff: '+ a proposed line' }],
       },
     });
-    writeMarker(
-      root,
-      marker({
-        state: 'GATED',
-        tourId: TOUR,
-        jobIndex: 1,
-        interruptedState: 'EXECUTING',
-        gateId: entry.gateId,
-      }),
-    );
+    given({
+      state: 'GATED',
+      tourId: TOUR,
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: entry.gateId,
+    });
     const doubles = sessions();
 
     const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -392,16 +412,13 @@ describe('the exits §3.2 defines', () => {
         sections: [{ document: 'SRS', section: '§4', diff: '+ a proposed line' }],
       },
     });
-    writeMarker(
-      root,
-      marker({
-        state: 'PARKED',
-        tourId: TOUR,
-        jobIndex: 1,
-        interruptedState: 'EXECUTING',
-        gateId: entry.gateId,
-      }),
-    );
+    given({
+      state: 'PARKED',
+      tourId: TOUR,
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: entry.gateId,
+    });
 
     const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
 
@@ -425,16 +442,13 @@ describe('a decided gate is applied from the entry', () => {
       },
     });
     decideGate(root, entry.gateId, 'approved', 'owner');
-    writeMarker(
-      root,
-      marker({
-        state: 'GATED',
-        tourId: TOUR,
-        jobIndex: 1,
-        interruptedState: 'EXECUTING',
-        gateId: entry.gateId,
-      }),
-    );
+    given({
+      state: 'GATED',
+      tourId: TOUR,
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: entry.gateId,
+    });
     const doubles = sessions();
 
     const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
@@ -456,7 +470,7 @@ describe('a cycle that resumes into CLOSING reads the disposition it died under'
    */
   for (const disposition of ['abandoned', 'carried'] as const) {
     it(`closes a ${disposition} tour as ${disposition}, with no gate entry to read`, async () => {
-      writeMarker(root, marker({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition }));
+      given({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition });
       // Nothing is enqueued: the point is that the answer survives without an
       // entry, which is what the marker field is for.
       expect(readdirSync(wardroomPaths(root).gatesDir)).toEqual([]);
@@ -471,10 +485,7 @@ describe('a cycle that resumes into CLOSING reads the disposition it died under'
   }
 
   it('leaves no disposition on the marker once the tour reaches IDLE', async () => {
-    writeMarker(
-      root,
-      marker({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition: 'carried' }),
-    );
+    given({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition: 'carried' });
 
     const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
 
@@ -488,7 +499,7 @@ describe('a cycle that resumes into CLOSING reads the disposition it died under'
 
 describe('a stop condition ends with a WIP commit', () => {
   it('commits once when a job cannot be advanced', async () => {
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
     const wip: string[] = [];
 
@@ -510,7 +521,7 @@ describe('a stop condition ends with a WIP commit', () => {
   });
 
   it('states why it stopped rather than stopping silently', async () => {
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
 
     const outcome = await runCycle({
@@ -527,7 +538,7 @@ describe('a stop condition ends with a WIP commit', () => {
     // The loop never runs git itself: the commit is the caller's, gated by
     // §4.5. An absent committer must leave a stop that says nothing was asked
     // for, not one that reads as though a commit happened.
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
 
     const outcome = await runCycle({
@@ -543,7 +554,7 @@ describe('a stop condition ends with a WIP commit', () => {
 
 describe('a cooperative stop takes effect at a job boundary', () => {
   it('stops after the job in flight and never mid-job', async () => {
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
     let boundaries = 0;
 
@@ -563,7 +574,7 @@ describe('a cooperative stop takes effect at a job boundary', () => {
   });
 
   it('leaves the marker at the boundary, for the ordinary resumption path', async () => {
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
 
     await runCycle({
@@ -582,7 +593,7 @@ describe('a cooperative stop takes effect at a job boundary', () => {
   });
 
   it('is never asked before the first boundary', async () => {
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
     const doubles = sessions();
     const askedAfter: number[] = [];
 
@@ -603,7 +614,7 @@ describe('a cooperative stop takes effect at a job boundary', () => {
   it('does not stop a tour whose job list finished on the same boundary', async () => {
     // The last boundary stops nothing: the list is done, and calling that a
     // detach would leave a finished tour looking unfinished.
-    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 2 }));
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 2 });
     const doubles = sessions();
 
     const outcome = await runCycle({
@@ -632,7 +643,7 @@ describe('a cooperative stop takes effect at a job boundary', () => {
 
 describe('every transition is one marker write through the machine', () => {
   it('writes the marker once per transition and never beside the machine', async () => {
-    writeMarker(root, marker({ state: 'IDLE' }));
+    given({ state: 'IDLE' });
     writes.length = 0;
     advances.length = 0;
     const doubles = sessions();
@@ -674,16 +685,13 @@ describe('every transition is one marker write through the machine', () => {
         sections: [{ document: 'SRS', section: '§4', diff: '+ a proposed line' }],
       },
     });
-    writeMarker(
-      root,
-      marker({
-        state: 'GATED',
-        tourId: TOUR,
-        jobIndex: 1,
-        interruptedState: 'EXECUTING',
-        gateId: entry.gateId,
-      }),
-    );
+    given({
+      state: 'GATED',
+      tourId: TOUR,
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: entry.gateId,
+    });
     writes.length = 0;
     advances.length = 0;
 
@@ -693,5 +701,42 @@ describe('every transition is one marker write through the machine', () => {
     // Resumption's own write and nothing else: the loop found a state it may
     // not move and moved nothing.
     expect(markerWrites()).toBe(1);
+  });
+});
+
+/**
+ * Where resumption stops, the run stops with it and says what each record
+ * said (SDD §4.4, D-96, D-100).
+ *
+ * A message that said only "they disagree" would leave the owner opening the
+ * two files by hand, which is the work the stop exists to save them.
+ */
+describe('a run that cannot establish a state reports both readings', () => {
+  it('names the pair, the marker reading and the block reading, and writes nothing', async () => {
+    // The block says tour-9 and the marker says another tour: two records,
+    // neither of them evidence, and no rule for choosing between them.
+    writeProgress(block);
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: 'tour-99', jobIndex: 0 }));
+    const before = readMarker(root);
+    const doubles = sessions();
+
+    const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+    expect(outcome.kind).toBe('stopped');
+    expect(outcome.reason).toContain('tour_id');
+    expect(outcome.reason).toContain('tour-99');
+    expect(outcome.reason).toContain(TOUR);
+    // No driver ran and the marker is untouched.
+    expect(doubles.opened).toEqual([]);
+    expect(readMarker(root)).toEqual(before);
+  });
+
+  it('names head_commit where the marker points at work this repository does not have', async () => {
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0, headCommit: 'f'.repeat(40) });
+
+    const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
+
+    expect(outcome.kind).toBe('stopped');
+    expect(outcome.reason).toContain('head_commit');
   });
 });

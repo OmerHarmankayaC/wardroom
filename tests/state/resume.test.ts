@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import { decide, enqueue, park } from '../../src/gates/queue.js';
+import {
+  NO_OPEN_TOUR_STATEMENT,
+  type OpenTourBlock,
+  renderOpenTourBlock,
+} from '../../src/progress/open-tour.js';
 import { writeLastFailure } from '../../src/state/last-failure.js';
 import {
   type StateMarker,
@@ -18,10 +23,10 @@ import { resume } from '../../src/state/resume.js';
  * Resume after process death (SDD §4.4). The next action is reconstructed from
  * repository files alone (FR-1.2): no orchestrator memory, no agent session.
  *
- * Scope boundary (BACKLOG D-21): step 2's cross-check against the open-tour
- * block in PROGRESS.md is NOT implemented here: it needs a grammar no
- * document fixes yet (B-9). Every result says so rather than implying a
- * completeness it does not have (T-5).
+ * Step 2 reads two records and lets neither correct the other (D-96, D-100):
+ * the marker's `tour_id` and `job_index` against the open-tour block. So the
+ * fixture writes a block that agrees with the marker, and the cases below that
+ * make them disagree do it deliberately.
  */
 
 let root: string;
@@ -34,6 +39,7 @@ beforeEach(() => {
   mkdirSync(join(root, '.wardroom'), { recursive: true });
   writeFileSync(join(root, '.wardroom', 'config.json'), JSON.stringify(config));
   writeFileSync(join(root, 'README.md'), '# fixture\n');
+  writeBlock(AGREEING_BLOCK);
   git('add', '-A');
   git('commit', '-qm', 'fixture');
 });
@@ -64,6 +70,43 @@ function head(): string {
   return git('rev-parse', 'HEAD').trim();
 }
 
+/**
+ * The block the marker agrees with: one tour, its first job done and its
+ * second not, which is `job_index` 1 (SDD §4.4, D-96).
+ */
+const AGREEING_BLOCK: OpenTourBlock = {
+  tourId: 'tour-1',
+  goal: 'Prove resumption resumes.',
+  basedOn: 'CHARTER 1.3, SRS 1.13, SDD 1.19, BACKLOG 1.22',
+  opened: '2026-08-21',
+  jobs: [
+    { title: 'First job', criterion: 'the first thing holds', status: 'done' },
+    { title: 'Second job', criterion: 'the second thing holds', status: 'pending' },
+  ],
+  doNotTouch: 'the CLI',
+  stopConditions: 'a large deviation',
+};
+
+/** Writes the Open tour section, or the statement that no tour is open. */
+function writeBlock(open: OpenTourBlock | null): void {
+  mkdirSync(join(root, 'docs'), { recursive: true });
+  writeFileSync(
+    join(root, 'docs', 'PROGRESS.md'),
+    [
+      '# PROGRESS',
+      '',
+      '## Open tour',
+      '',
+      open === null ? NO_OPEN_TOUR_STATEMENT : renderOpenTourBlock(open),
+      '',
+      '## Done',
+      '',
+      'none',
+      '',
+    ].join('\n'),
+  );
+}
+
 function dirtyTheWorkingTree(): void {
   writeFileSync(join(root, 'README.md'), '# fixture, half edited\n');
 }
@@ -72,8 +115,10 @@ function dirtyTheWorkingTree(): void {
 function markerFor(state: TourState, overrides: Partial<StateMarker> = {}): StateMarker {
   const base: StateMarker = {
     state,
-    tourId: 'tour-1',
-    jobIndex: 1,
+    // The two states that carry no tour: the identifier is minted with the
+    // block at the end of planning (§3.3, §4.1 step 7, D-45).
+    tourId: state === 'IDLE' || state === 'PLANNING' ? null : 'tour-1',
+    jobIndex: state === 'IDLE' || state === 'PLANNING' ? null : 1,
     interruptedState: state === 'GATED' || state === 'PARKED' ? 'EXECUTING' : null,
     attemptCount: state === 'FAILED' ? 1 : 0,
     // A gate-bearing marker names the entry it waits on (SDD §3.3, D-62).
@@ -219,10 +264,53 @@ describe('an unreadable marker (D-20)', () => {
     expect(result.nextAction).toBe('RESUME_EXECUTION');
   });
 
-  it('asks for reconstruction when git alone cannot decide', () => {
+  it('resolves from the block where git alone could not decide, which is T-5 sharpest edge', () => {
+    // The case this procedure could not decide until B-9 closed it: a clean
+    // tree gives git nothing, and a tour open at a job boundary looked exactly
+    // like no tour at all. The block tells them apart by existing (D-96).
     givenUnreadableMarker();
 
-    expect(resume(root).nextAction).toBe('RECONSTRUCT_FROM_DOCUMENTS');
+    const result = resume(root);
+
+    expect(result.state).toBe('EXECUTING');
+    expect(result.nextAction).toBe('RESUME_EXECUTION');
+    // Adopted from the block, which is the only record left saying either.
+    expect(result.marker?.tourId).toBe('tour-1');
+    expect(result.marker?.jobIndex).toBe(1);
+  });
+
+  it('answers IDLE where the section states that no tour is open, which is no tour', () => {
+    writeBlock(null);
+    git('add', '-A');
+    git('commit', '-qm', 'tour closed');
+    givenUnreadableMarker();
+
+    const result = resume(root);
+
+    expect(result.state).toBe('IDLE');
+    expect(result.nextAction).toBe('PLAN_TOUR');
+  });
+
+  it('stops where the block cannot be read either, and leaves the marker where it is', () => {
+    // Both records unreadable and a clean tree: nothing left says whether a
+    // tour is open. Moving the marker aside here would leave the next run
+    // reading an absent marker, and absent means a repository Wardroom has
+    // never run, which would abandon the tour silently.
+    writeBlock(null);
+    writeFileSync(
+      join(root, 'docs', 'PROGRESS.md'),
+      '# PROGRESS\n\n## Open tour\n\nhalf a block\n',
+    );
+    git('add', '-A');
+    git('commit', '-qm', 'broken block');
+    givenUnreadableMarker();
+
+    const result = resume(root);
+
+    expect(result.state).toBeNull();
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.discardedMarker).toBeNull();
+    expect(readMarker(root).kind).toBe('unreadable');
   });
 
   it('preserves the discarded marker beside its replacement for inspection', () => {
@@ -245,14 +333,48 @@ describe('an unreadable marker (D-20)', () => {
 });
 
 describe('validation against the repository (SDD §4.4 step 2)', () => {
-  it('lets the repository win when the marker names an older commit', () => {
+  it('lets the repository win where the marker names a commit HEAD can reach', () => {
+    const older = head();
+    writeFileSync(join(root, 'README.md'), '# fixture, one commit later\n');
+    git('add', '-A');
+    git('commit', '-qm', 'work completed after the last marker write');
+    given('EXECUTING', { headCommit: older });
+
+    const result = resume(root);
+
+    expect(result.headCommitCheck.kind).toBe('behind');
+    expect(result.headCommitStale).toBe(true);
+    expect(result.headCommit).toBe(head());
+    expect(result.marker?.headCommit).toBe(head());
+  });
+
+  it('stops where the marker names a commit the repository does not have (D-100)', () => {
+    // Not late work: a marker naming work this repository does not have, which
+    // is what a history rewrite or the wrong clone leaves. Reconstructing from
+    // git would adopt a history the marker says was different.
     given('EXECUTING', { headCommit: 'f'.repeat(40) });
 
     const result = resume(root);
 
-    expect(result.headCommitStale).toBe(true);
-    expect(result.headCommit).toBe(head());
-    expect(result.marker?.headCommit).toBe(head());
+    expect(result.state).toBeNull();
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.headCommitCheck.kind).toBe('unreachable');
+    expect(result.unresolved.join(' ')).toMatch(/head_commit/);
+  });
+
+  it('stops where the marker names a commit HEAD cannot reach', () => {
+    const orphan = git(
+      'commit-tree',
+      `${git('rev-parse', 'HEAD^{tree}').trim()}`,
+      '-m',
+      'orphan',
+    ).trim();
+    given('EXECUTING', { headCommit: orphan });
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.headCommitCheck.kind).toBe('unreachable');
   });
 
   it('does not flag a marker that agrees with HEAD', () => {
@@ -261,13 +383,112 @@ describe('validation against the repository (SDD §4.4 step 2)', () => {
     expect(resume(root).headCommitStale).toBe(false);
   });
 
-  it('reports the PROGRESS cross-check as unavailable rather than as done', () => {
+  it('reports the cross-check as agreed where both pairs agree (B-9, D-96)', () => {
     given('EXECUTING');
 
     const result = resume(root);
 
-    expect(result.progressCrossCheck).toBe('unavailable');
-    expect(result.events.some((event) => event.includes('B-9'))).toBe(true);
+    expect(result.progressCrossCheck).toEqual({ kind: 'agreed' });
+  });
+
+  it('agrees with a block written by hand rather than by the renderer (D-55)', () => {
+    // The block a person co-writes is the one this will meet: the fixture
+    // above goes through `renderOpenTourBlock`, so on its own it would only
+    // show that the writer and the reader agree with each other.
+    writeFileSync(
+      join(root, 'docs', 'PROGRESS.md'),
+      [
+        '# PROGRESS',
+        '',
+        '## Open tour',
+        '',
+        '### Tour tour-1',
+        '',
+        '- **Goal:** Prove resumption resumes.',
+        '- **Based on:** CHARTER 1.3, SRS 1.13, SDD 1.19, BACKLOG 1.22',
+        '- **Opened:** 2026-08-21',
+        '',
+        '| # | Job | Acceptance criterion | Status |',
+        '|---|---|---|---|',
+        '| 1 | First job | the first thing holds | done |',
+        // Wrapped across two physical lines, as a hand-written block is.
+        '| 2 | Second job | the second thing holds, at some',
+        '  length that wraps | pending |',
+        '',
+        '- **Do not touch:** the CLI',
+        '- **Stop conditions:** a large deviation',
+        '',
+      ].join('\n'),
+    );
+    given('EXECUTING');
+
+    expect(resume(root).progressCrossCheck).toEqual({ kind: 'agreed' });
+  });
+
+  it('stops on a tour_id the block does not carry, reporting both readings', () => {
+    given('EXECUTING', { tourId: 'tour-2' });
+
+    const result = resume(root);
+
+    expect(result.state).toBeNull();
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.progressCrossCheck.kind).toBe('disagreed');
+    // Both readings, neither preferred: that is the whole point of stopping.
+    expect(result.unresolved.join(' ')).toContain('tour-2');
+    expect(result.unresolved.join(' ')).toContain('tour-1');
+  });
+
+  it('stops on a job_index the block does not agree with, reporting both readings', () => {
+    given('EXECUTING', { jobIndex: 0 });
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.unresolved.join(' ')).toMatch(/job_index/);
+  });
+
+  it('compares job_index against the first row not marked done, not against the row count', () => {
+    writeBlock({
+      ...AGREEING_BLOCK,
+      jobs: [
+        { title: 'First job', criterion: 'a', status: 'done' },
+        { title: 'Second job', criterion: 'b', status: 'in-progress' },
+        { title: 'Third job', criterion: 'c', status: 'pending' },
+      ],
+    });
+    given('EXECUTING', { jobIndex: 1 });
+
+    expect(resume(root).progressCrossCheck).toEqual({ kind: 'agreed' });
+  });
+
+  it('stops where the marker names a tour and the block does not parse', () => {
+    writeFileSync(join(root, 'docs', 'PROGRESS.md'), '# PROGRESS\n\n## Open tour\n\nrubbish\n');
+    given('EXECUTING');
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.progressCrossCheck.kind).toBe('unreadable-block');
+  });
+
+  it('compares nothing where the marker names no tour, which is IDLE and PLANNING', () => {
+    // A pair with nothing on the marker's side is not two records disagreeing.
+    // Stopping here would break the D-49 adoption path, where a PLANNING
+    // marker meets a block that was written just before the death.
+    given('PLANNING');
+
+    expect(resume(root).progressCrossCheck).toEqual({ kind: 'no-tour' });
+    expect(resume(root).nextAction).toBe('REPLAN');
+  });
+
+  it('writes nothing when it stops', () => {
+    given('EXECUTING', { tourId: 'tour-2' });
+    const before = readMarker(root);
+
+    const result = resume(root);
+
+    expect(result.marker).toBeNull();
+    expect(readMarker(root)).toEqual(before);
   });
 });
 
@@ -306,7 +527,7 @@ describe('the working tree (SDD §4.4 step 3)', () => {
 
 describe('the corrected marker (SDD §4.4 step 5)', () => {
   it('is on disk by the time resume returns, so a second death lands on it', () => {
-    given('FAILED', { attemptCount: config.attempt_budget, headCommit: 'f'.repeat(40) });
+    given('FAILED', { attemptCount: config.attempt_budget });
 
     const result = resume(root);
     const persisted = readMarker(root);
@@ -326,12 +547,11 @@ describe('the corrected marker (SDD §4.4 step 5)', () => {
   });
 
   it('does not invent a marker when the state could not be reconstructed', () => {
-    givenUnreadableMarker();
+    given('EXECUTING', { tourId: 'tour-2' });
 
     const result = resume(root);
 
     expect(result.marker).toBeNull();
-    expect(readMarker(root).kind).toBe('absent');
   });
 });
 

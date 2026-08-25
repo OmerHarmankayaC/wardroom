@@ -145,11 +145,17 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
   // resumption procedure with its own opinion about a stale HEAD.
   const start = resume(root, now());
   if (start.state === null || start.marker === null) {
+    // Both readings, not a summary of them. The whole point of stopping is
+    // that the owner sees what each record said and decides; a message that
+    // said only "they disagree" would leave them opening the files by hand
+    // (SDD §4.4, D-96, D-100).
     return outcome({
       kind: 'stopped',
       visited,
-      reason:
-        'the marker was unreadable and the repository alone cannot say what state the tour is in, so no driver can be named (SDD §4.4). Nothing is guessed at, and nothing was committed.',
+      reason: [
+        'resumption could not establish a state and wrote nothing, so no driver can be named (SDD §4.4).',
+        ...start.unresolved,
+      ].join('\n  - '),
     });
   }
 

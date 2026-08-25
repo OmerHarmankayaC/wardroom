@@ -51,6 +51,14 @@ export {
 } from './state/marker.js';
 export { type NextAction, type ResumeResult, resume } from './state/resume.js';
 export {
+  type CrossCheck,
+  type Disagreement,
+  type HeadCommitCheck,
+  checkHeadCommit,
+  crossCheckOpenTour,
+  firstUnfinishedRow,
+} from './state/cross-check.js';
+export {
   IllegalTransitionError,
   type TourEvent,
   type TourEventType,
