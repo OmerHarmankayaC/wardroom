@@ -125,7 +125,7 @@ export function settleDebtPrompt(debt: ReportedDebt): string {
     '',
     'Write the change into the document, bump its version, and add a change-log',
     'row for that version (FR-6.1). Settle it from the canonical documents where',
-    'you can; a change that needs a scope decision is the owner"s and reaches',
+    "you can; a change that needs a scope decision is the owner's and reaches",
     'them as a gate instead (D-75).',
   ].join('\n');
 }

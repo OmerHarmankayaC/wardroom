@@ -211,6 +211,25 @@ function blockRefusal(reason: string): SyncHookJSONOutput {
 }
 
 /**
+ * The answer where the orchestrator cannot say where it is.
+ *
+ * The marker is read on the hook's hot path, by the block guard and by the
+ * gate path both, and a read that throws would leave the hook itself throwing
+ * rather than answering. Denying is the only safe answer: a gate raised
+ * without the marker would name no tour and no job, and a call let through on
+ * that silence is the failure the gate exists to prevent.
+ */
+function markerRefusal(error: unknown): SyncHookJSONOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `The orchestrator could not read its own state marker, so it cannot say where it is: ${error instanceof Error ? error.message : String(error)}. The call is denied rather than taken (SDD §3.3, §4.4 step 1).`,
+    },
+  };
+}
+
+/**
  * The answer for a gate that could not be raised or could not be read.
  *
  * Denying is the only safe answer available. Approving would let the action
@@ -358,6 +377,17 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     // questions get asked; no call is both.
     if (isCommitCall(call.tool_name, call.tool_input)) return heldCommit();
 
+    // The marker, once, before anything reads it. Two things below need it and
+    // reading it twice was two chances to see two different states inside one
+    // call; reading it outside a guard was a hook that throws instead of
+    // answering, which the SDK has no rule for.
+    let current: StateMarker;
+    try {
+      current = input.marker();
+    } catch (error) {
+      return markerRefusal(error);
+    }
+
     // Then the block guard, which is also not a TD-2 class. It is asked in
     // EXECUTING and only there, because that is the state whose contract §4.2
     // is: the block is written by planning in `PLANNING` (§4.1 step 7) and
@@ -366,7 +396,7 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     // the writer. Keying on the state rather than on a role also keeps one
     // interceptor installed on both roles, which is what makes neither of them
     // intercepted less than the other (D-43).
-    if (input.marker().state === 'EXECUTING') {
+    if (current.state === 'EXECUTING') {
       const write = checkProgressWrite({
         root: input.root,
         docRoot: input.config.docRoot,
@@ -386,15 +416,22 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     // park, so the approved action is taken by a later session; without this,
     // that session's identical call raises the same gate a second time, which
     // §4.4 forbids, and the owner is asked a question they already answered.
-    const current = input.marker();
-    const standing = authorizationFor(input.root, {
-      gateClass: classification.gateClass,
-      what: classification.what,
-      tourId: current.tourId,
-    });
-    if (standing !== null) {
-      consume(input.root, standing.gateId, classification.what, { now: now() });
-      return decisionOutcome(standing);
+    //
+    // Inside the guard, for the same reason the enqueue below is: reading the
+    // queue touches the disk, and a read that failed would take the hook with
+    // it rather than denying the call.
+    try {
+      const standing = authorizationFor(input.root, {
+        gateClass: classification.gateClass,
+        what: classification.what,
+        tourId: current.tourId,
+      });
+      if (standing !== null) {
+        consume(input.root, standing.gateId, classification.what, { now: now() });
+        return decisionOutcome(standing);
+      }
+    } catch (error) {
+      return refusal(classification, error);
     }
 
     // Fails closed. A gate the orchestrator could not raise reported nothing,

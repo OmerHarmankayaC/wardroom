@@ -6,6 +6,7 @@ import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/c
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config/load.js';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
+import { decide, list } from '../../src/gates/queue.js';
 import { createDriverSessions } from '../../src/loop/driver-sessions.js';
 import { NO, YES } from '../../src/loop/prompts.js';
 import { runCycle } from '../../src/loop/run.js';
@@ -340,3 +341,128 @@ function failingThenPassingConfig(): string {
     2,
   )}\n`;
 }
+
+/**
+ * Where the two halves meet.
+ *
+ * The interception hook and the block guard are exercised against calls this
+ * suite hands them, and the wiring is exercised against a session that makes
+ * no calls at all. Either check alone passes while the wiring installs
+ * something else, or nothing, on the sessions it builds: the assembly refuses a
+ * session with no `PreToolUse` hook, so an absent one would be caught, and a
+ * hook that is not this interceptor would not (D-55).
+ */
+describe('a session the wiring built is intercepted and supplied', () => {
+  /** The wiring, plus the options every session it opened was built with. */
+  function wiredWithoutReplies(): {
+    seen: Options[];
+    sessions: ReturnType<typeof createDriverSessions>;
+  } {
+    const seen: Options[] = [];
+    const config = loadConfig(root);
+    const wiring = createSessionWiring({
+      root,
+      config,
+      marker: () => markerOnDisk(root),
+      query: (params) => {
+        seen.push(params.options as Options);
+        return (async function* (): AsyncGenerator<SDKMessage, void> {
+          if (typeof params.prompt === 'string') return;
+          for await (const _message of params.prompt) {
+            yield resultMessage({ text: 'done' });
+          }
+        })() as unknown as Query;
+      },
+    });
+    return { seen, sessions: createDriverSessions({ root, config, wiring }) };
+  }
+
+  it('installs the interception hook and the supplier on every session it opens', async () => {
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithoutReplies();
+
+    const opened = built.sessions.executing(TOUR);
+    await opened.session.acceptancePasses(block.jobs[0] as never, 0);
+    await opened.close();
+
+    expect(built.seen).not.toHaveLength(0);
+    for (const options of built.seen) {
+      expect(options.hooks?.PreToolUse?.[0]?.hooks?.length ?? 0).toBeGreaterThan(0);
+      expect(typeof options.canUseTool).toBe('function');
+      // And the guarantees those two rest on (D-53, SDD §4.2).
+      expect(options.settingSources).toEqual([]);
+      expect(options.permissionMode).toBe('default');
+    }
+  });
+
+  it('denies a push through the hook it installed, without the session having to ask', async () => {
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithoutReplies();
+
+    const opened = built.sessions.executing(TOUR);
+    await opened.session.acceptancePasses(block.jobs[0] as never, 0);
+    await opened.close();
+
+    const hook = built.seen[0]?.hooks?.PreToolUse?.[0]?.hooks?.[0];
+    expect(hook).toBeDefined();
+
+    // The gate is raised and the call blocks on the owner, so the decision is
+    // made from outside while the hook waits, which is what a gate is.
+    const held = (hook as NonNullable<typeof hook>)(
+      {
+        session_id: 's-1',
+        transcript_path: '/dev/null',
+        cwd: root,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+        tool_use_id: 'tu-1',
+      } as never,
+      'tu-1',
+      { signal: new AbortController().signal },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const entries = list(root);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.gateClass).toBe('push');
+    // The preview was built by the orchestrator, not by the classifier, and it
+    // names the commits the push would carry.
+    expect(entries[0]?.preview.kind).toBe('push');
+
+    decide(root, entries[0]?.gateId ?? '', 'rejected', 'owner');
+    const answer = (await held) as { hookSpecificOutput?: { permissionDecision?: string } };
+    expect(answer.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
+  it('denies every call where the marker cannot be read, rather than throwing out of the hook', async () => {
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithoutReplies();
+    const opened = built.sessions.executing(TOUR);
+    await opened.session.acceptancePasses(block.jobs[0] as never, 0);
+    await opened.close();
+
+    // The marker is read on the hot path by the block guard and by the gate
+    // path both. An orchestrator that cannot say where it is has no basis for
+    // letting anything through, and a hook that throws instead of answering
+    // leaves the SDK with no rule to apply.
+    writeFileSync(wardroomPaths(root).stateFile, '{ truncated');
+
+    const hook = built.seen[0]?.hooks?.PreToolUse?.[0]?.hooks?.[0];
+    const answer = (await (hook as NonNullable<typeof hook>)(
+      {
+        session_id: 's-1',
+        transcript_path: '/dev/null',
+        cwd: root,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+        tool_use_id: 'tu-2',
+      } as never,
+      'tu-2',
+      { signal: new AbortController().signal },
+    )) as { hookSpecificOutput?: { permissionDecision?: string } };
+
+    expect(answer.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+});
