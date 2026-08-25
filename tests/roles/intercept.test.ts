@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { PreToolUseHookInput, SyncHookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
@@ -11,6 +11,7 @@ import type { ToolCallClassification } from '../../src/gates/classify.js';
 import type { ParkedNotification } from '../../src/gates/notify.js';
 import { decide, list } from '../../src/gates/queue.js';
 import type { GateEntry, GatePreview } from '../../src/gates/schema.js';
+import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
 import {
   createGateInterceptor,
   decisionOutcome,
@@ -752,5 +753,115 @@ describe('the marker follows the gate, so a death cannot resume past it', () => 
     await call('Bash', { command: 'npm run test' });
 
     expect(readMarker(root)).toEqual(before);
+  });
+});
+
+/**
+ * The block guard, at the placement that makes it hold (SDD §4.2, D-39, D-95).
+ *
+ * The permission rules leave PROGRESS writable, because the Implementer owes
+ * the job statuses and, since D-95, an appended row for a job an audit raised.
+ * What they cannot express is which change to the table an edit makes, so the
+ * hook asks that here, in `EXECUTING` and only there: `PLANNING` writes the
+ * block and `CLOSING` clears it, and both of those are the PM's (§4.1 step 7,
+ * §4.6 step 6, D-99).
+ */
+describe('the open-tour block guard runs where §4.2 is the contract', () => {
+  const block: OpenTourBlock = {
+    tourId: 'tour-3-b-i',
+    goal: 'Prove the guard guards.',
+    basedOn: 'CHARTER 1.3, SRS 1.13, SDD 1.18, BACKLOG 1.21',
+    opened: '2026-08-21',
+    jobs: [
+      { title: 'First job', criterion: 'the first thing holds', status: 'done' },
+      { title: 'Second job', criterion: 'the second thing holds', status: 'in-progress' },
+    ],
+    doNotTouch: 'the CLI',
+    stopConditions: 'a large deviation',
+  };
+
+  const progress = () => join(root, config.docRoot, 'PROGRESS.md');
+
+  beforeEach(() => {
+    mkdirSync(dirname(progress()), { recursive: true });
+    writeFileSync(
+      progress(),
+      ['# PROGRESS', '', '## Open tour', '', renderOpenTourBlock(block), '', '## Done', ''].join(
+        '\n',
+      ),
+    );
+  });
+
+  async function write(oldString: string, newString: string): Promise<SyncHookJSONOutput> {
+    const { hook } = interceptor();
+    // The hook's declared return covers the asynchronous member too; the block
+    // guard answers synchronously, and a cast here would hide it if it stopped.
+    const output = await hook(
+      toolCall('Edit', {
+        file_path: join(config.docRoot, 'PROGRESS.md'),
+        old_string: oldString,
+        new_string: newString,
+      }),
+      'tu-1',
+      { signal: new AbortController().signal },
+    );
+    if (!('async' in output)) return output;
+    throw new Error('the block guard answers synchronously, and this answer did not');
+  }
+
+  it('lets a status move through untouched', async () => {
+    const result = await write(
+      '| 2 | Second job | the second thing holds | in-progress |',
+      '| 2 | Second job | the second thing holds | done |',
+    );
+
+    expect(permission(result)).toBeUndefined();
+  });
+
+  it('lets an appended row through untouched (D-95)', async () => {
+    const result = await write(
+      '| 2 | Second job | the second thing holds | in-progress |',
+      '| 2 | Second job | the second thing holds | in-progress |\n| 3 | Audit finding | the pattern is gone | pending |',
+    );
+
+    expect(permission(result)).toBeUndefined();
+  });
+
+  it('denies an edit to an existing row, and says which rule it broke', async () => {
+    const result = await write(
+      '| 1 | First job | the first thing holds | done |',
+      '| 1 | First job | something easier | done |',
+    );
+
+    expect(permission(result)).toBe('deny');
+    expect(
+      result.hookSpecificOutput?.hookEventName === 'PreToolUse' &&
+        result.hookSpecificOutput.permissionDecisionReason,
+    ).toMatch(/D-95/);
+  });
+
+  it('denies a removal', async () => {
+    const result = await write('| 2 | Second job | the second thing holds | in-progress |\n', '');
+
+    expect(permission(result)).toBe('deny');
+  });
+
+  it('raises no gate entry and writes no audit line, because it is a machine check', async () => {
+    await write(
+      '| 1 | First job | the first thing holds | done |',
+      '| 1 | First job | something easier | done |',
+    );
+
+    expect(list(root)).toEqual([]);
+    expect(readAuditLines(root)).toEqual([]);
+  });
+
+  it('leaves the PM alone in CLOSING, where clearing the block is step 6', async () => {
+    currentMarker = { ...EXECUTING_MARKER, state: 'CLOSING', disposition: 'closed' };
+    writeMarker(root, currentMarker);
+
+    const result = await write(renderOpenTourBlock(block), 'No tour is open.');
+
+    expect(permission(result)).toBeUndefined();
   });
 });

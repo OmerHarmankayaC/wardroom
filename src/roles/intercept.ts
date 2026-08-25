@@ -11,6 +11,7 @@ import { type ToolCallClassification, classifyToolCall, isCommitCall } from '../
 import { type Notifier, deliver, parkedNotification } from '../gates/notify.js';
 import { authorizationFor, consume, enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
+import { checkProgressWrite } from '../progress/write-check.js';
 import { stagedPaths } from '../state/git.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker, TourState } from '../state/marker.js';
@@ -193,6 +194,23 @@ function commitRefusal(blocks: readonly string[]): SyncHookJSONOutput {
 }
 
 /**
+ * The hook's answer for a write the block guard refused (§4.2, D-39, D-95).
+ *
+ * A denial and not an entry, for the same reason the commit gate raises none:
+ * this is a machine check on what an edit does to one table, not a question
+ * anybody puts to the owner.
+ */
+function blockRefusal(reason: string): SyncHookJSONOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `The Implementer writes the job statuses of the open-tour block and appends a row for a job an audit raised, and nothing else in the document root (SDD §4.2, FR-2.1, D-39, D-95): ${reason}`,
+    },
+  };
+}
+
+/**
  * The answer for a gate that could not be raised or could not be read.
  *
  * Denying is the only safe answer available. Approving would let the action
@@ -339,6 +357,26 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     // classifier will answer null for it. Order matters only in that both
     // questions get asked; no call is both.
     if (isCommitCall(call.tool_name, call.tool_input)) return heldCommit();
+
+    // Then the block guard, which is also not a TD-2 class. It is asked in
+    // EXECUTING and only there, because that is the state whose contract §4.2
+    // is: the block is written by planning in `PLANNING` (§4.1 step 7) and
+    // cleared by closure in `CLOSING` (§4.6 step 6), both of them the PM's
+    // writes, and D-99 puts one session inside one state, so the state names
+    // the writer. Keying on the state rather than on a role also keeps one
+    // interceptor installed on both roles, which is what makes neither of them
+    // intercepted less than the other (D-43).
+    if (input.marker().state === 'EXECUTING') {
+      const write = checkProgressWrite({
+        root: input.root,
+        docRoot: input.config.docRoot,
+        toolName: call.tool_name,
+        toolInput: call.tool_input,
+      });
+      if (write.kind === 'block' && !write.verdict.allowed) {
+        return blockRefusal(write.verdict.reason);
+      }
+    }
 
     const classification = classifyToolCall(call.tool_name, call.tool_input);
     if (classification === null) return UNTOUCHED;

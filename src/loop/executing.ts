@@ -130,6 +130,29 @@ export class JobDidNotAdvanceError extends Error {
 }
 
 /**
+ * Re-reads the job list at a boundary (§4.2, D-95).
+ *
+ * The block on disk is the durable record and the drive's copy is not, so a
+ * row appended since entry belongs to this run rather than to the next one.
+ * A block that has stopped parsing stops the drive: the guard that holds the
+ * Implementer to statuses and appends should have refused whatever did it, so
+ * a malformed block here is evidence of a defect rather than a list to guess
+ * at (SRS §3.5).
+ */
+function rereadJobList(input: DriveExecutingInput, current: OpenTourBlock): OpenTourBlock {
+  const read = readOpenTour(input.root, input.config.docRoot);
+  if (read.kind === 'open') return read.block;
+  if (read.kind === 'none') {
+    throw new Error(
+      'the open-tour block was cleared while the job list was being driven, and clearing it is closure step 6 (SDD §4.6, FR-2.1).',
+    );
+  }
+  throw new Error(
+    `the open-tour block stopped parsing while the job list was being driven (${read.field}: ${read.problem}). It carried ${current.jobs.length} jobs when the drive started, and a list resumption depends on is never guessed at (SRS §3.5).`,
+  );
+}
+
+/**
  * Drives `EXECUTING` to its exit.
  *
  * Returns when every job's acceptance criterion passes and the marker reads
@@ -152,12 +175,15 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
     );
   }
 
-  const block = read.block;
+  let block = read.block;
   const now = input.now ?? (() => new Date());
   const rules = { attemptBudget: input.config.attemptBudget };
   const ran: number[] = [];
   let marker = input.marker;
-  let resumedAt = block.jobs.length;
+  // Null until the first job this run actually handles. A sentinel of "the
+  // length" would move under the re-read below, since the list can grow while
+  // the drive is running (D-95).
+  let firstHandled: number | null = null;
   let carried = false;
   let stopped = false;
   // Not read before the first boundary. The rule is defined from job 1,
@@ -165,9 +191,22 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
   // finished; checking earlier would compare against a largest job of zero.
   let ceiling: CeilingVerdict | null = null;
 
-  for (const [index, job] of block.jobs.entries()) {
+  // A ceiling on how many jobs one drive may run, independent of the list it
+  // is reading. The list can grow while the drive is running (D-95), and a
+  // session that appended a row per boundary would turn that into a loop with
+  // nothing on disk saying why. Set far above any real tour: an audit raises a
+  // job or two, not a job per job.
+  const jobCeiling = block.jobs.length * 2 + 8;
+
+  for (let index = 0; index < block.jobs.length; index += 1) {
+    if (index >= jobCeiling) {
+      throw new Error(
+        `the job list grew to ${block.jobs.length} rows while this drive was running, past the ${jobCeiling} this tour started with room for. An audit raises a job or two (D-95); a list that grows once per boundary is a loop, and the drive stops rather than following it (SDD §4.2).`,
+      );
+    }
+    const job = block.jobs[index] as TourJob;
     if (await input.session.acceptancePasses(job, index)) continue;
-    if (resumedAt === block.jobs.length) resumedAt = index;
+    firstHandled ??= index;
 
     await input.session.runJob(job, index);
     ran.push(index);
@@ -186,6 +225,13 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
       rules,
       now(),
     ).marker;
+
+    // The list is re-read at the boundary, because the session may have
+    // appended a row for a job an audit raised since the drive started (D-95,
+    // D-34). A drive holding the list it read at entry would exit to
+    // `VERIFYING` with that job unrun, which is the loss D-95 exists to
+    // prevent, arriving without a death to blame.
+    block = rereadJobList(input, block);
 
     // The ceiling is read at the boundary and never mid-job (FR-1.4): the job
     // is green and committed by the time this runs, which is the whole reason
@@ -211,6 +257,7 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
 
   // A stopped drive does not advance: the tour keeps its open list and the
   // next run resumes from this boundary by the ordinary path (§4.4, §5.1).
+  const resumedAt = firstHandled ?? block.jobs.length;
   if (stopped) {
     return { marker, block, ran, resumedAt, carried, disposition: 'closed', ceiling, stopped };
   }

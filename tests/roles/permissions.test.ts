@@ -3,6 +3,8 @@ import { RUN_DIR_NAME, WARDROOM_DIR_NAME, wardroomPaths } from '../../src/config
 import type { ProjectConfig, ProjectLevel } from '../../src/config/schema.js';
 import { tourLogDirectory, versionCarryingDocuments } from '../../src/documents/set.js';
 import { GATE_REACHING_TOOLS, gateClassesReachableBy } from '../../src/gates/classify.js';
+import { classifyBlockEdit } from '../../src/progress/block-edit.js';
+import { parseOpenTourBlock } from '../../src/progress/open-tour.js';
 import {
   PermissionRuleRefusedError,
   RUNTIME_DENY_RULE,
@@ -52,6 +54,24 @@ function expectDenialForm(rules: readonly string[]): void {
   }
 }
 
+/** One open-tour section, so the guard below is fed markdown a session writes. */
+function blockText(rows: readonly string[]): string {
+  return [
+    '### Tour tour-9',
+    '',
+    '- **Goal:** Prove the rules stop where the guard starts.',
+    '- **Based on:** CHARTER 1.3, SRS 1.13, SDD 1.18, BACKLOG 1.21',
+    '- **Opened:** 2026-08-21',
+    '',
+    '| # | Job | Acceptance criterion | Status |',
+    '|---|---|---|---|',
+    ...rows,
+    '',
+    '- **Do not touch:** the CLI',
+    '- **Stop conditions:** a large deviation',
+  ].join('\n');
+}
+
 describe('the document root is denied by enumeration', () => {
   const rules = documentDenyRules(configAt('full'));
 
@@ -68,8 +88,32 @@ describe('the document root is denied by enumeration', () => {
   it('does not deny PROGRESS, which the Implementer must update at every boundary', () => {
     // The PROGRESS exception is not an exception in the configuration: PROGRESS
     // is simply not in the enumerated set (SDD §4.2, D-39). Denying the root
-    // whole would forbid the per job update SRS §3.5 requires.
+    // whole would forbid the per job update SRS §3.5 requires, and since D-95
+    // the appended row for a job an audit raised as well.
     expect(rules.join('\n')).not.toContain('PROGRESS');
+  });
+
+  it('leaves the rest of the exception to the block guard, which a path rule cannot express', () => {
+    // Where the two halves meet, and the reason the rules stop here. A rule
+    // reaches one file; the exception is two named changes to one table inside
+    // it, so the enumeration leaves PROGRESS writable and
+    // `classifyBlockEdit` decides which change was made (SDD §4.2, D-95).
+    const inside = classifyBlockEdit(
+      parseOpenTourBlock(blockText(['| 1 | First job | the first thing holds | pending |'])),
+      parseOpenTourBlock(
+        blockText([
+          '| 1 | First job | the first thing holds | pending |',
+          '| 2 | Audit finding | the pattern is gone | pending |',
+        ]),
+      ),
+    );
+    const outside = classifyBlockEdit(
+      parseOpenTourBlock(blockText(['| 1 | First job | the first thing holds | pending |'])),
+      parseOpenTourBlock(blockText(['| 1 | First job | something easier | pending |'])),
+    );
+
+    expect(inside.allowed).toBe(true);
+    expect(outside.allowed).toBe(false);
   });
 
   it('enumerates and nothing more, because deny cannot be carved out by allow', () => {

@@ -9,6 +9,7 @@ import { list } from '../../src/gates/queue.js';
 import { driveExecuting } from '../../src/loop/executing.js';
 import {
   type OpenTourBlock,
+  appendJob,
   readOpenTour,
   renderOpenTourBlock,
 } from '../../src/progress/open-tour.js';
@@ -484,5 +485,90 @@ describe('the ceiling at the edges of the job list', () => {
 
     expect(ran).toEqual([]);
     expect(result.ceiling).toBeNull();
+  });
+});
+
+/**
+ * A job an audit raised, appended to the block by the session that raised it
+ * (SDD §4.2, D-95, D-34).
+ *
+ * The reason the row is durable at all is that a death mid-audit-job used to
+ * resume against a block whose jobs were all done, exit to `VERIFYING`, and
+ * lose both the finding and the work. The same loss arrives without a death if
+ * the drive holds the list it read when it started, so both are checked.
+ */
+describe('an audit-raised row appended mid-drive is not lost', () => {
+  const finding = {
+    title: 'The audit finding',
+    criterion: 'the pattern no longer appears in the tour diff',
+    status: 'pending',
+  } as const;
+
+  it('runs a row the session appended while the drive was running', async () => {
+    const { ran, session } = recordingSession();
+    const appending = {
+      ...session,
+      runJob: async (job: unknown, index: number) => {
+        await session.runJob(job, index);
+        // The audit at the end of job 2 raises a finding, which D-34 makes its
+        // own numbered job and D-95 lets this session record.
+        if (index === 1) appendJob(root, DOC_ROOT, finding);
+      },
+    };
+
+    const result = await drive(appending);
+
+    expect(ran).toEqual([0, 1, 2, 3]);
+    expect(result.block.jobs).toHaveLength(4);
+    expect(result.marker.state).toBe('VERIFYING');
+  });
+
+  it('resumes into a row appended before the killed run could commit it', async () => {
+    // The death: jobs 1 to 3 are done and committed, the row is on disk, and
+    // nothing else is. The marker still reads the boundary before it, because
+    // the marker is written by the orchestrator at a boundary this job never
+    // reached (D-47).
+    appendJob(root, DOC_ROOT, finding);
+    const killed: StateMarker = { ...START, jobIndex: 3 };
+    writeMarker(root, killed);
+
+    const { ran, session } = recordingSession((index, done) => index < 3 || done.includes(index));
+
+    const result = await drive(session, killed);
+
+    // Resumed at the first job whose criterion does not pass, which is the
+    // appended one, not at `job_index` (§4.4 step 4).
+    expect(result.resumedAt).toBe(3);
+    expect(ran).toEqual([3]);
+    expect(result.block.jobs[3]?.title).toBe(finding.title);
+  });
+
+  it('stops rather than following a list that grows once per boundary', async () => {
+    const { session } = recordingSession();
+    const runaway = {
+      ...session,
+      runJob: async (job: unknown, index: number) => {
+        await session.runJob(job, index);
+        appendJob(root, DOC_ROOT, { ...finding, title: `Finding ${index}` });
+      },
+    };
+
+    // A loop is what this would otherwise be, with nothing on disk saying why.
+    await expect(drive(runaway)).rejects.toThrowError(/grew to/);
+  });
+
+  it('stops where the block stopped parsing under it', async () => {
+    const { session } = recordingSession();
+    const breaking = {
+      ...session,
+      runJob: async (job: unknown, index: number) => {
+        await session.runJob(job, index);
+        if (index === 0) {
+          write(join(DOC_ROOT, 'PROGRESS.md'), '# PROGRESS\n\n## Open tour\n\n### Tour tour-9\n');
+        }
+      },
+    };
+
+    await expect(drive(breaking)).rejects.toThrowError(/stopped parsing/);
   });
 });

@@ -390,6 +390,71 @@ export function clearOpenTour(root: string, docRoot: string): void {
 }
 
 /**
+ * The logical span of one job's table row, located the same way the parser
+ * read it.
+ *
+ * Shared by the status writer and the append writer so both edit the table the
+ * parser sees. Locating a row by scanning raw lines for a literal prefix is
+ * what let a wrapped row be missed, or its criterion cell overwritten with the
+ * status word.
+ */
+function jobRowSpan(body: string, jobNumber: number): LogicalSpan | undefined {
+  return logicalSpans(body).find(
+    (candidate) =>
+      candidate.text.trimStart().startsWith('|') &&
+      cells(candidate.text)[0] !== undefined &&
+      unescapeCell(cells(candidate.text)[0] as string) === String(jobNumber),
+  );
+}
+
+/** The parsed block and the section it was read from, or a thrown reason. */
+function openBlock(root: string, docRoot: string): { section: Section; block: OpenTourBlock } {
+  const section = readSection(root, docRoot);
+  if (!isSection(section)) {
+    throw new Error(section.kind === 'malformed' ? section.problem : section.kind);
+  }
+  const body = section.lines.slice(section.start, section.end).join('\n');
+  const parsed = parseOpenTourBlock(body);
+  if (parsed.kind === 'none') {
+    throw new Error('no tour is open, so the block carries no job list to write to.');
+  }
+  if (parsed.kind === 'malformed') {
+    throw new Error(`the open-tour block does not parse (${parsed.field}: ${parsed.problem})`);
+  }
+  return { section, block: parsed.block };
+}
+
+/**
+ * Appends one job row to the open-tour block (SDD §4.2, D-95).
+ *
+ * The Implementer's exception widened from the job statuses to appending a row
+ * for a job an audit raised (D-34), because until it did such a job existed
+ * nowhere durable until the report was written: a death mid-audit-job resumed
+ * against a block whose jobs were all done, exited to `VERIFYING`, and lost
+ * both the finding and the work.
+ *
+ * The edit inserts one line after the last row and touches nothing else, for
+ * the reason the status writer touches one row: everything above it is the
+ * plan, and a writer that re-rendered the block would rewrite rows it was not
+ * asked about.
+ */
+export function appendJob(root: string, docRoot: string, job: TourJob): void {
+  const { section, block } = openBlock(root, docRoot);
+
+  const body = section.lines.slice(section.start, section.end).join('\n');
+  const last = jobRowSpan(body, block.jobs.length);
+  if (last === undefined) {
+    throw new Error(`no table row for job ${block.jobs.length} was found in the section.`);
+  }
+
+  const lines = [...section.lines];
+  // Rendered through the same function the block writer uses, so an appended
+  // row is byte for byte the row planning would have written (SRS §3.5).
+  lines.splice(section.start + last.end, 0, renderJobRow(block.jobs.length + 1, job));
+  atomicWriteFile(progressPath(root, docRoot), lines.join('\n'));
+}
+
+/**
  * Updates one job's status at a job boundary (SDD §4.2). The edit touches
  * exactly one table row: everything else in the file, the other rows
  * included, is left byte for byte as it was.
@@ -419,16 +484,9 @@ export function updateJobStatus(
   }
 
   // The row is located through the same spans the parser read the table with,
-  // so every shape the parser accepts can be updated. Locating it by scanning
-  // raw lines for a literal prefix is what let a wrapped row be missed, or its
-  // criterion cell overwritten with the status word.
+  // so every shape the parser accepts can be updated.
   const body = section.lines.slice(section.start, section.end).join('\n');
-  const span = logicalSpans(body).find(
-    (candidate) =>
-      candidate.text.trimStart().startsWith('|') &&
-      cells(candidate.text)[0] !== undefined &&
-      unescapeCell(cells(candidate.text)[0] as string) === String(jobNumber),
-  );
+  const span = jobRowSpan(body, jobNumber);
   if (span === undefined) {
     throw new Error(`no table row for job ${jobNumber} was found in the section.`);
   }
