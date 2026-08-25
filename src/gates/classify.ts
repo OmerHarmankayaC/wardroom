@@ -231,6 +231,36 @@ function stringField(input: unknown, field: string): string | null {
  * decided not to look, which is why the tool surface it looks at is the same
  * table {@link GATE_REACHING_TOOLS} the allow-list check reads.
  */
+/**
+ * The path-like arguments a command line shows.
+ *
+ * One home, because two things read a command for the same reason and would
+ * otherwise read it differently: the `canUseTool` supplier asks whether they
+ * stay inside the repository (D-56, D-69) and the destructive preview asks
+ * what they are (§3.1). A second copy is a second answer, and the one that
+ * drifts is whichever is edited last.
+ *
+ * It is a floor and not a fence, as D-69 says: a program can reach anywhere
+ * without an argument saying so. What this catches is the ordinary case.
+ */
+export function pathsInCommand(command: string): string[] {
+  const found: string[] = [];
+  for (const segment of commandSegments(command)) {
+    const words = segment.split(/\s+/);
+    words.forEach((word, index) => {
+      const bare = word.replace(/^["']|["']$/g, '');
+      if (bare === '' || bare.startsWith('-')) return;
+      // `cd somewhere` moves the whole rest of the segment, so its argument is
+      // a path even when it carries no separator and no dot.
+      const isCdArgument = index === 1 && words[0] === 'cd';
+      if (isCdArgument || bare.startsWith('/') || bare.startsWith('.') || bare.includes('/')) {
+        found.push(bare);
+      }
+    });
+  }
+  return found;
+}
+
 export function classifyToolCall(
   toolName: string,
   toolInput: unknown,

@@ -216,13 +216,23 @@ export {
   JobDidNotAdvanceError,
   driveExecuting,
 } from './loop/executing.js';
+export { type RunCycleInput, type RunOutcome, type WipStop, runCycle } from './loop/run.js';
 export {
-  type RunCycleInput,
-  type RunOutcome,
-  type RunSessions,
-  type WipStop,
-  runCycle,
-} from './loop/run.js';
+  type DriverSessionFactory,
+  type DriverSessionInput,
+  createDriverSessions,
+  fixedSessions,
+} from './loop/driver-sessions.js';
+export {
+  type ScopedSession,
+  type SessionWiring,
+  type SessionWiringInput,
+  type TurnResult,
+  createSessionWiring,
+  markerOnDisk,
+} from './loop/wiring.js';
+export { YES, NO, answersYes } from './loop/prompts.js';
+export { createPreviewBuilder, roleInState } from './gates/build-preview.js';
 export {
   type AssembleSessionInput,
   type AssembledSession,

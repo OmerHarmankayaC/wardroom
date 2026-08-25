@@ -213,6 +213,59 @@ export function isAncestorOf(root: string, ref: string, from: string): boolean {
   }
 }
 
+/** One commit as a push preview names it (SDD §3.1). */
+export interface CommitSummary {
+  readonly hash: string;
+  readonly subject: string;
+}
+
+/**
+ * The commits a push would carry: those reachable from `HEAD` and not from the
+ * remote tracking ref (SDD §3.1, the push preview).
+ *
+ * Where there is no such ref the answer is every commit on `HEAD`, because a
+ * branch the remote has never seen is a branch the push carries whole. That is
+ * a different fact from "nothing to push", and the two must not be answered
+ * with the same empty list: the preview is what the owner decides on.
+ *
+ * Uncapped, deliberately. A cap would truncate the list the owner decides on
+ * without saying so, and the preview shape has no field to say it in: a push
+ * of sixty commits shown as fifty is a preview that reads as complete and is
+ * not. How many to show at once is the surface's question (§5.2).
+ */
+export function commitsNotOnRemote(
+  root: string,
+  remote: string,
+  branch: string,
+): readonly CommitSummary[] {
+  assertRepository(root);
+  const ref = `refs/remotes/${remote}/${branch}`;
+  let range = 'HEAD';
+  try {
+    git(root, ['rev-parse', '--verify', '--quiet', ref]);
+    range = `${ref}..HEAD`;
+  } catch {
+    // No tracking ref: the range stays the whole branch.
+  }
+
+  let listing: string;
+  try {
+    listing = git(root, ['log', '--format=%h%x00%s', range]);
+  } catch {
+    // An unborn branch has no commits to list, which is an answer rather than
+    // a failure: a push from here would carry nothing.
+    return [];
+  }
+
+  return listing
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const [hash, subject] = line.split('\0');
+      return { hash: hash ?? '', subject: subject ?? '' };
+    });
+}
+
 /**
  * Whether the remote tracking ref for `branch` carries `commit` (SDD §4.6
  * step 2). Null where there is no such ref, which is a different answer from

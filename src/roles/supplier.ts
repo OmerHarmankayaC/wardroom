@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { classifyToolCall, commandSegments } from '../gates/classify.js';
+import { classifyToolCall, pathsInCommand } from '../gates/classify.js';
 
 /**
  * The `canUseTool` supplier (SDD §4.2, BACKLOG D-56).
@@ -31,31 +31,6 @@ import { classifyToolCall, commandSegments } from '../gates/classify.js';
  * and the tool surface, which decides what exists to call (Appendix A.2).
  */
 const PATH_FIELDS = ['file_path', 'notebook_path', 'path'] as const;
-
-/**
- * Arguments in a command line that look like paths rather than flags.
- *
- * The line is split by the classifier's own splitter, so the two readers of a
- * command line agree about what the command was. A supplier that segmented
- * differently would eventually see a command the classifier did not.
- */
-function pathsInCommand(command: string): string[] {
-  const found: string[] = [];
-  for (const segment of commandSegments(command)) {
-    const words = segment.split(/\s+/);
-    words.forEach((word, index) => {
-      const bare = word.replace(/^["']|["']$/g, '');
-      if (bare === '' || bare.startsWith('-')) return;
-      // `cd somewhere` moves the whole rest of the segment, so its argument is
-      // a path even when it carries no separator and no dot.
-      const isCdArgument = index === 1 && words[0] === 'cd';
-      if (isCdArgument || bare.startsWith('/') || bare.startsWith('.') || bare.includes('/')) {
-        found.push(bare);
-      }
-    });
-  }
-  return found;
-}
 
 function pathsIn(toolName: string, input: Record<string, unknown>): string[] {
   if (toolName === 'Bash') {

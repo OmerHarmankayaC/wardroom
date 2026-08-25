@@ -5,7 +5,9 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import { decide as decideGate, enqueue } from '../../src/gates/queue.js';
+import { type DriverSessionFactory, fixedSessions } from '../../src/loop/driver-sessions.js';
 import { runCycle } from '../../src/loop/run.js';
+import type { ScopedSession } from '../../src/loop/wiring.js';
 import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
 import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
 import { writeReport } from '../../src/state/report.js';
@@ -158,6 +160,20 @@ function marker(overrides: Partial<StateMarker>): StateMarker {
 
 const NOW = () => new Date('2026-08-21T10:00:00.000Z');
 
+/** A session that runs a job and leaves its acceptance criterion failing. */
+function stuckImplementer(): ScopedSession<{
+  runJob: () => Promise<void>;
+  acceptancePasses: () => Promise<boolean>;
+}> {
+  return {
+    session: {
+      runJob: async () => undefined,
+      acceptancePasses: async () => false,
+    },
+    close: async () => ({ text: null, errors: [], failed: false }),
+  };
+}
+
 /**
  * Sessions that record what they were asked to do. The acceptance criterion
  * answers false until the job has been run, which is what an honest session
@@ -168,33 +184,61 @@ function sessions(options: { readonly planWrites?: boolean } = {}) {
   const ran: number[] = [];
   const settled: string[] = [];
   const logs: string[] = [];
+  /** Every session this cycle opened, in order, by the state it was opened for. */
+  const opened: string[] = [];
+  const closed: string[] = [];
+
+  const fixed = fixedSessions({
+    pm: {
+      plan: async () => {
+        planned.push(planned.length);
+        if (options.planWrites === true) writeProgress(block);
+      },
+    },
+    implementer: {
+      runJob: async (_job: unknown, index: number) => {
+        ran.push(index);
+      },
+      acceptancePasses: async (_job: unknown, index: number) => ran.includes(index),
+    },
+    closing: {
+      settleDebt: async (debt: { document: string }) => {
+        settled.push(debt.document);
+      },
+      writeTourLog: async (log: { tourId: string }) => {
+        logs.push(log.tourId);
+      },
+    },
+  });
+
+  /**
+   * Counts the openings, which is what D-99 is about: one session per entry
+   * into one state, and a re-entry opens another rather than reusing the first.
+   */
+  function counting<T>(state: string, open: () => ScopedSession<T>): ScopedSession<T> {
+    opened.push(state);
+    const scoped = open();
+    return {
+      session: scoped.session,
+      close: async () => {
+        closed.push(state);
+        return await scoped.close();
+      },
+    };
+  }
+
   return {
     planned,
     ran,
     settled,
     logs,
+    opened,
+    closed,
     sessions: {
-      pm: {
-        plan: async () => {
-          planned.push(planned.length);
-          if (options.planWrites === true) writeProgress(block);
-        },
-      },
-      implementer: {
-        runJob: async (_job: unknown, index: number) => {
-          ran.push(index);
-        },
-        acceptancePasses: async (_job: unknown, index: number) => ran.includes(index),
-      },
-      closing: {
-        settleDebt: async (debt: { document: string }) => {
-          settled.push(debt.document);
-        },
-        writeTourLog: async (log: { tourId: string }) => {
-          logs.push(log.tourId);
-        },
-      },
-    },
+      planning: () => counting('PLANNING', () => fixed.planning()),
+      executing: (tourId: string) => counting('EXECUTING', () => fixed.executing(tourId)),
+      closing: (tourId: string) => counting('CLOSING', () => fixed.closing(tourId)),
+    } satisfies DriverSessionFactory,
   };
 }
 
@@ -450,16 +494,10 @@ describe('a stop condition ends with a WIP commit', () => {
 
     const outcome = await runCycle({
       root,
-      sessions: {
-        ...doubles.sessions,
-        // A session that runs the job and leaves its criterion failing is the
-        // stop condition §4.2 names: the loop stops rather than handing the
-        // same job over again.
-        implementer: {
-          runJob: async () => undefined,
-          acceptancePasses: async () => false,
-        },
-      },
+      // A session that runs the job and leaves its criterion failing is the
+      // stop condition §4.2 names: the loop stops rather than handing the same
+      // job over again.
+      sessions: { ...doubles.sessions, executing: () => stuckImplementer() },
       commitWip: async (stop: { message: string }) => {
         wip.push(stop.message);
       },
@@ -477,13 +515,7 @@ describe('a stop condition ends with a WIP commit', () => {
 
     const outcome = await runCycle({
       root,
-      sessions: {
-        ...doubles.sessions,
-        implementer: {
-          runJob: async () => undefined,
-          acceptancePasses: async () => false,
-        },
-      },
+      sessions: { ...doubles.sessions, executing: () => stuckImplementer() },
       commitWip: async () => undefined,
       now: NOW,
     });
@@ -500,13 +532,7 @@ describe('a stop condition ends with a WIP commit', () => {
 
     const outcome = await runCycle({
       root,
-      sessions: {
-        ...doubles.sessions,
-        implementer: {
-          runJob: async () => undefined,
-          acceptancePasses: async () => false,
-        },
-      },
+      sessions: { ...doubles.sessions, executing: () => stuckImplementer() },
       now: NOW,
     });
 
@@ -584,14 +610,17 @@ describe('a cooperative stop takes effect at a job boundary', () => {
       root,
       sessions: {
         ...doubles.sessions,
-        implementer: {
-          runJob: async (_job: unknown, index: number) => {
-            doubles.ran.push(index);
+        executing: () => ({
+          session: {
+            runJob: async (_job: unknown, index: number) => {
+              doubles.ran.push(index);
+            },
+            // Only the last job is outstanding.
+            acceptancePasses: async (_job: unknown, index: number) =>
+              index < 2 || doubles.ran.includes(index),
           },
-          // Only the last job is outstanding.
-          acceptancePasses: async (_job: unknown, index: number) =>
-            index < 2 || doubles.ran.includes(index),
-        },
+          close: async () => ({ text: null, errors: [], failed: false }),
+        }),
       },
       stopRequested: () => true,
       now: NOW,

@@ -8,9 +8,10 @@ import { type TreeChange, workingTreeChanges } from '../state/git.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker, TourDisposition, TourState } from '../state/marker.js';
 import { resume } from '../state/resume.js';
-import { type ClosingSession, driveClosing } from './closing.js';
-import { type ImplementerSession, driveExecuting } from './executing.js';
-import { type PmSession, drivePlanning } from './planning.js';
+import { driveClosing } from './closing.js';
+import type { DriverSessionFactory } from './driver-sessions.js';
+import { driveExecuting } from './executing.js';
+import { drivePlanning } from './planning.js';
 import { driveFailed, driveVerifying } from './verifying.js';
 
 /**
@@ -35,13 +36,6 @@ import { driveFailed, driveVerifying } from './verifying.js';
  *   handed to the caller, whose commit is gated by §4.5.
  */
 
-/** The three sessions a cycle can need, one per role-bearing state. */
-export interface RunSessions {
-  readonly pm: PmSession;
-  readonly implementer: ImplementerSession;
-  readonly closing: ClosingSession;
-}
-
 /** What the caller is asked to commit when a stop condition ends the tour. */
 export interface WipStop {
   /** Why the tour is stopping with work unfinished (§4.5 requires it stated). */
@@ -54,7 +48,18 @@ export interface WipStop {
 
 export interface RunCycleInput {
   readonly root: string;
-  readonly sessions: RunSessions;
+  /**
+   * Where a session comes from, asked at every entry into a role-bearing state
+   * (D-99).
+   *
+   * A factory rather than three ready sessions: no session spans two states,
+   * and re-entering a state starts a new one, whether the re-entry is a retry
+   * after `FAILED`, a resume after a park, or a second cycle. Holding three
+   * sessions here would make that impossible to express, and the two mechanisms
+   * that already assume it, NFR-4's attribution by state and D-61's
+   * authorization, would both be quietly wrong.
+   */
+  readonly sessions: DriverSessionFactory;
   /**
    * Whether the run has been asked to stop (D-83). Asked once at each job
    * boundary and nowhere else: a detach mid-job would discard exactly the work
@@ -223,26 +228,47 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
         }
 
         case 'PLANNING': {
-          const result = await drivePlanning({
-            root,
-            config,
-            marker,
-            session: input.sessions.pm,
-            now,
-          });
-          marker = result.marker;
+          const opened = input.sessions.planning();
+          try {
+            const result = await drivePlanning({
+              root,
+              config,
+              marker,
+              session: opened.session,
+              now,
+            });
+            marker = result.marker;
+          } finally {
+            // Closed on the way out however the drive left, because a session
+            // ends when its generator completes and nothing else marks it
+            // (A.4). A drive that threw would otherwise leave one open.
+            await opened.close();
+          }
           continue;
         }
 
         case 'EXECUTING': {
-          const result = await driveExecuting({
-            root,
-            config,
-            marker,
-            session: input.sessions.implementer,
-            ...(input.stopRequested === undefined ? {} : { stopRequested: input.stopRequested }),
-            now,
-          });
+          const tourId = marker.tourId;
+          if (tourId === null) {
+            return await stopWith(
+              'the marker reads EXECUTING and names no tour. The identifier is minted with the open-tour block at the end of planning (SDD §3.3, §4.1 step 7, D-45), so a marker without one here is a shape the transition table never produced.',
+              null,
+            );
+          }
+          const opened = input.sessions.executing(tourId);
+          let result: Awaited<ReturnType<typeof driveExecuting>>;
+          try {
+            result = await driveExecuting({
+              root,
+              config,
+              marker,
+              session: opened.session,
+              ...(input.stopRequested === undefined ? {} : { stopRequested: input.stopRequested }),
+              now,
+            });
+          } finally {
+            await opened.close();
+          }
           marker = result.marker;
           if (result.stopped) {
             // The tour stays open at the boundary it reached. Nothing to
@@ -288,13 +314,26 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
           // scope-change gate and back out of it, rather than the default this
           // variable holds for a cycle that never reached EXECUTING.
           disposition = marker.disposition ?? disposition;
-          const result = await driveClosing({
-            root,
-            config,
-            marker,
-            session: input.sessions.closing,
-            now,
-          });
+          const closingTour = marker.tourId;
+          if (closingTour === null) {
+            return await stopWith(
+              'the marker reads CLOSING and names no tour, and a tour closing has an identifier: it was minted when its record was created (SDD §3.3, D-45).',
+              null,
+            );
+          }
+          const opened = input.sessions.closing(closingTour);
+          let result: Awaited<ReturnType<typeof driveClosing>>;
+          try {
+            result = await driveClosing({
+              root,
+              config,
+              marker,
+              session: opened.session,
+              now,
+            });
+          } finally {
+            await opened.close();
+          }
           marker = result.marker;
           if (result.kind === 'closed') {
             disposition = result.disposition;

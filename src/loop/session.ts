@@ -55,6 +55,16 @@ export interface RunSessionInput {
   /** Fed every message as it arrives. Absent where the session is not metered. */
   readonly meter?: UsageMeter;
   /**
+   * Called at every result message, which is a turn boundary and not the
+   * session's end (A.4).
+   *
+   * The session consumer reads the stream to completion, so a caller that
+   * drives the session turn by turn has no other moment to learn that its turn
+   * came back. It is a notification and not a decision: nothing here waits on
+   * it and nothing it does changes what is written.
+   */
+  readonly onTurn?: (result: SDKResultMessage) => void;
+  /**
    * The state the session ran in, which the session line is attributed to.
    *
    * Required, and deliberately without a default. NFR-4 attributes usage by
@@ -123,6 +133,47 @@ function abortedRecord(tourId: string, errors: readonly string[], at: string): s
   ].join('\n');
 }
 
+/** What reading one session's stream to the end found. */
+export interface ConsumedSession {
+  /** The report text the success member carried, or null where none did. */
+  readonly text: string | null;
+  /** The errors an aborted session carried. Empty for a completed one. */
+  readonly errors: readonly string[];
+  readonly failed: boolean;
+}
+
+/**
+ * Reads one session's stream to the end and meters it, writing nothing.
+ *
+ * The two consumers below differ in one thing, the artifact, and share this.
+ * A PM session leaves its output in the files it wrote, the open-tour block
+ * (§4.1 step 7) and the tour log (§4.6 step 4); only the Implementer owes a
+ * report. A PM session that wrote one would write it to the Implementer's
+ * path, over the report closure is about to read.
+ */
+export async function consumeSession(
+  input: Omit<RunSessionInput, 'tourId'> & { readonly tourId?: string },
+): Promise<ConsumedSession> {
+  let latestResult: SDKResultMessage | null = null;
+
+  for await (const message of input.stream) {
+    input.meter?.observe(message);
+    // Replaced rather than kept: the last one is the session's, and the
+    // earlier ones were turns.
+    if (message.type === 'result') {
+      latestResult = message;
+      input.onTurn?.(message);
+    }
+  }
+
+  // The session line belongs to the session's end, which is here.
+  input.meter?.end(input.state);
+
+  const errors = errorsFrom(latestResult);
+  if (errors.length > 0) return { text: null, errors, failed: true };
+  return { text: (latestResult as SuccessResult).result, errors: [], failed: false };
+}
+
 /**
  * Reads one session's stream to the end, writing what it produced to the
  * report path.
@@ -132,19 +183,8 @@ function abortedRecord(tourId: string, errors: readonly string[], at: string): s
  */
 export async function runSession(input: RunSessionInput): Promise<SessionRunResult> {
   const now = input.now ?? (() => new Date());
-  let latestResult: SDKResultMessage | null = null;
-
-  for await (const message of input.stream) {
-    input.meter?.observe(message);
-    // Replaced rather than kept: the last one is the session's, and the
-    // earlier ones were turns.
-    if (message.type === 'result') latestResult = message;
-  }
-
-  // The session line belongs to the session's end, which is here.
-  input.meter?.end(input.state);
-
-  const errors = errorsFrom(latestResult);
+  const consumed = await consumeSession(input);
+  const errors = consumed.errors;
   const path = reportPath(input.root, input.tourId);
   mkdirSync(wardroomPaths(input.root).reportsDir, { recursive: true });
 
@@ -166,7 +206,7 @@ export async function runSession(input: RunSessionInput): Promise<SessionRunResu
   // §4.6 checks its claims rather than adopting them, so nothing here edits,
   // completes or validates it: a consumer that repaired the text would be
   // checking a report it had helped write.
-  const text = (latestResult as SuccessResult).result;
+  const text = consumed.text as string;
   atomicWriteFile(path, text);
   return {
     kind: 'reported',
