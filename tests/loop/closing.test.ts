@@ -15,7 +15,7 @@ import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
 import { readDocBaseline } from '../../src/documents/baseline.js';
 import { readAuditLines } from '../../src/gates/audit.js';
-import { decide, list } from '../../src/gates/queue.js';
+import { decide, enqueue, list } from '../../src/gates/queue.js';
 import { driveClosing } from '../../src/loop/closing.js';
 import {
   NO_OPEN_TOUR_STATEMENT,
@@ -307,6 +307,43 @@ describe('document debts are settled, or they raise a gate (§4.6 step 3, D-75)'
     // from the documents must be able to see it was declined, not forgotten.
     expect(second.kind === 'closed' && second.tourLog).toContain('declined by the owner');
     expect(readAuditLines(root).filter((line) => line.event === 'declined')).toHaveLength(1);
+  });
+
+  it('matches a refusal on an entry this module did not write (D-55)', async () => {
+    // The check above raises the gate through the same function that reads it
+    // back, so a reworded question would move on both sides at once and the
+    // test would still pass. What breaks in a real repository is different: a
+    // question already on disk stops matching, and only an entry written
+    // outside this module can show that.
+    const debt = {
+      document: 'SDD.md',
+      section: '4.6',
+      problem: 'the order is wrong',
+      settleable: false,
+    };
+    writeReport(root, { ...report, deviations: [], debts: [debt] });
+
+    const entry = enqueue(root, {
+      gateClass: 'scope-change',
+      tourId: 'tour-9',
+      jobIndex: 1,
+      interruptedState: 'CLOSING',
+      // Written out, as the entry on disk holds it. A reworded question fails
+      // to match rather than matching wrongly, which is the safe direction
+      // (D-67), and this is where that failure becomes visible.
+      what: 'Decide the scope question SDD.md §4.6 raises before the tour closes',
+      why: 'FR-2.1 and CHARTER §2.2',
+      preview: {
+        kind: 'scope-change',
+        sections: [{ document: 'SDD.md', section: '4.6', diff: '+ a proposed line' }],
+      },
+    });
+    decide(root, entry.gateId, 'rejected', 'owner');
+
+    const result = await close();
+
+    expect(result.kind).toBe('closed');
+    expect(result.kind === 'closed' && result.tourLog).toContain('declined by the owner');
   });
 
   it('raises the gate for a different debt even where another was declined', async () => {
