@@ -802,17 +802,12 @@ describe('a disposition decided before CLOSING reaches CLOSING', () => {
     expect(gated.kind === 'ok' && gated.marker.state).toBe('GATED');
     expect(gated.kind === 'ok' && gated.marker.disposition).toBe('carried');
 
-    // And it is still there when the owner's answer moves the marker back.
+    // The owner declines, which settles the debt (D-79), and the tour closes
+    // under the disposition it left CLOSING with.
     decideGate(root, outcome.gateId ?? '', 'rejected', 'owner');
-    const applied = advance(
-      root,
-      gated.kind === 'ok' ? gated.marker : marker({}),
-      { type: 'decide', gateClass: 'scope-change', approved: false },
-      { attemptBudget: 3 },
-      NOW(),
-    );
+    const closed = await runCycle({ root, sessions: sessions().sessions, now: NOW });
 
-    expect(applied.marker.state).toBe('CLOSING');
-    expect(applied.marker.disposition).toBe('carried');
+    expect(closed.kind).toBe('idle');
+    expect(closed.disposition).toBe('carried');
   });
 });

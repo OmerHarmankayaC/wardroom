@@ -1,6 +1,7 @@
 import type { ProjectConfig } from '../config/schema.js';
 import { recordClosureBaseline } from '../documents/baseline.js';
-import { enqueue } from '../gates/queue.js';
+import { appendAuditLine } from '../gates/audit.js';
+import { enqueue, refusalOf } from '../gates/queue.js';
 import type { ScopeChangePreview } from '../gates/schema.js';
 import { clearOpenTour, readOpenTour } from '../progress/open-tour.js';
 import type { OpenTourBlock, TourJob } from '../progress/open-tour.js';
@@ -162,19 +163,44 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
 
   // Step 3. Settle what can be settled; a debt needing a scope decision is the
   // owner's (D-75), and CLOSING cannot reach IDLE with one open (§3.2).
+  const declined: ReportedDebt[] = [];
   for (const debt of report.debts) {
     if (debt.settleable) {
       await input.session.settleDebt(debt);
       continue;
     }
-    return raiseScopeChange(input, debt, claimCheck, now());
+
+    // A refusal the owner has already given settles the debt (D-79). Without
+    // this the general rejection rule returns the tour to CLOSING with the
+    // same unsettleable debt, which raises the same gate, which is the loop
+    // D-50 closed for planning and left open here.
+    const refused = refusalOf(input.root, {
+      gateClass: 'scope-change',
+      what: scopeChangeQuestion(debt),
+      tourId,
+    });
+    if (refused === null) return raiseScopeChange(input, debt, claimCheck, now());
+
+    declined.push(debt);
+    appendAuditLine(input.root, {
+      ts: now().toISOString(),
+      gateId: refused.gateId,
+      event: 'declined',
+      payload: {
+        document: debt.document,
+        section: debt.section,
+        problem: debt.problem,
+        decided_by: refused.decidedBy,
+        note: refused.decisionNote,
+      },
+    });
   }
 
   const read = readOpenTour(input.root, input.config.docRoot);
   const block = read.kind === 'open' ? read.block : null;
 
   // Step 4 and 5. The log is the permanent record; the block is not.
-  const tourLog = renderTourLog(tourId, report, claimCheck, disposition, block);
+  const tourLog = renderTourLog(tourId, report, claimCheck, disposition, block, declined);
   await input.session.writeTourLog({ tourId, body: tourLog });
   if (disposition === 'carried' && block !== null) {
     appendPending(input.root, input.config, tourId, unfinished(block));
@@ -206,6 +232,18 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
   };
 }
 
+/**
+ * The question a scope-change gate asks about one debt.
+ *
+ * Its single home, because it is the key a later refusal is matched on
+ * (D-67's rule, one procedure over): a reworded question fails to match rather
+ * than matching wrongly, which is the safe direction, and two copies of the
+ * wording would eventually be two questions.
+ */
+function scopeChangeQuestion(debt: ReportedDebt): string {
+  return `Decide the scope question ${debt.document} §${debt.section} raises before the tour closes`;
+}
+
 function raiseScopeChange(
   input: DriveClosingInput,
   debt: ReportedDebt,
@@ -230,7 +268,7 @@ function raiseScopeChange(
       tourId: input.marker.tourId,
       jobIndex: input.marker.jobIndex,
       interruptedState: 'CLOSING',
-      what: `Decide the scope question ${debt.document} §${debt.section} raises before the tour closes`,
+      what: scopeChangeQuestion(debt),
       why: 'FR-2.1 and CHARTER §2.2: the PM settles document debts and does not set scope, and §3.2 forbids reaching IDLE with an open debt (D-75)',
       preview,
     },
@@ -261,6 +299,7 @@ function renderTourLog(
   claimCheck: ClaimCheck,
   disposition: TourDisposition,
   block: OpenTourBlock | null,
+  declined: readonly ReportedDebt[],
 ): string {
   const disagreements = [
     ...claimCheck.commits,
@@ -290,6 +329,17 @@ function renderTourLog(
     // a disagreement resolved silently would be a disagreement nobody could
     // find afterwards (§4.6 step 2).
     ...(disagreements.length === 0 ? ['Nowhere.'] : disagreements.map((line) => `- ${line}`)),
+    '',
+    '## Document debts the owner declined',
+    '',
+    // Recorded because the refusal settled the debt rather than the tour
+    // (D-79): a reader who finds the change missing from the documents has to
+    // be able to see that it was declined rather than forgotten.
+    ...(declined.length === 0
+      ? ['None.']
+      : declined.map(
+          (debt) => `- ${debt.document} §${debt.section}: ${debt.problem} (declined by the owner)`,
+        )),
     '',
     '## What remains open',
     '',

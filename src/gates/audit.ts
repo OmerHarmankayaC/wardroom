@@ -24,7 +24,16 @@ import { appendJsonLine, readJsonLines } from '../fs/jsonl.js';
  * still standing: the entry schema has no field for it, so the log is not
  * merely a trail here, it is the record the authorization check reads.
  */
-export const AUDIT_EVENTS = ['enqueued', 'parked', 'decided', 'consumed'] as const;
+/**
+ * What the log records about a gate.
+ *
+ * `declined` is not another word for `decided`: `decided` says the owner
+ * answered the gate, and `declined` says what that answer settled. A closure
+ * debt the owner refused is settled by the refusal (SDD §4.6 step 3, D-79),
+ * and that is a fact about the debt rather than about the gate, so the log
+ * would otherwise show the rejection and nothing about the tour carrying on.
+ */
+export const AUDIT_EVENTS = ['enqueued', 'parked', 'decided', 'consumed', 'declined'] as const;
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
 
 export interface AuditLine {

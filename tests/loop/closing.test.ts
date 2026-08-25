@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import type { ProjectConfig } from '../../src/config/schema.js';
 import { readDocBaseline } from '../../src/documents/baseline.js';
-import { list } from '../../src/gates/queue.js';
+import { readAuditLines } from '../../src/gates/audit.js';
+import { decide, list } from '../../src/gates/queue.js';
 import { driveClosing } from '../../src/loop/closing.js';
 import {
   NO_OPEN_TOUR_STATEMENT,
@@ -275,6 +276,76 @@ describe('document debts are settled, or they raise a gate (§4.6 step 3, D-75)'
     expect(entry?.preview.kind === 'scope-change' && entry.preview.sections[0]?.document).toBe(
       'SDD.md',
     );
+  });
+
+  /**
+   * A refusal settles the debt rather than the tour (SDD §4.6 step 3, D-79).
+   *
+   * Without it the general rejection rule returns the tour to `CLOSING` with
+   * the same unsettleable debt, which raises the same gate, which is the loop
+   * D-50 closed for planning and left open here. It ran for four tours after
+   * the decision was written.
+   */
+  it('closes on a debt the owner already declined, rather than raising the gate again', async () => {
+    writeReport(root, {
+      ...report,
+      deviations: [],
+      debts: [
+        { document: 'SDD.md', section: '4.6', problem: 'the order is wrong', settleable: false },
+      ],
+    });
+
+    const first = await close();
+    expect(first.kind).toBe('gated');
+    const gateId = list(root)[0]?.gateId ?? '';
+    decide(root, gateId, 'rejected', 'owner', 'the design stands as written');
+
+    const second = await close();
+
+    expect(second.kind).toBe('closed');
+    // Recorded rather than passed over: a reader who finds the change missing
+    // from the documents must be able to see it was declined, not forgotten.
+    expect(second.kind === 'closed' && second.tourLog).toContain('declined by the owner');
+    expect(readAuditLines(root).filter((line) => line.event === 'declined')).toHaveLength(1);
+  });
+
+  it('raises the gate for a different debt even where another was declined', async () => {
+    // The refusal is matched on the question it answered, so it settles that
+    // debt and no other (D-67's rule, one procedure over).
+    writeReport(root, {
+      ...report,
+      deviations: [],
+      debts: [
+        { document: 'SDD.md', section: '4.6', problem: 'the order is wrong', settleable: false },
+      ],
+    });
+    await close();
+    decide(root, list(root)[0]?.gateId ?? '', 'rejected', 'owner');
+
+    writeReport(root, {
+      ...report,
+      deviations: [],
+      debts: [{ document: 'SRS.md', section: '5.2', problem: 'something else', settleable: false }],
+    });
+
+    expect((await close()).kind).toBe('gated');
+  });
+
+  it('does not settle a debt on an approval, which is the owner asking for the change', async () => {
+    writeReport(root, {
+      ...report,
+      deviations: [],
+      debts: [
+        { document: 'SDD.md', section: '4.6', problem: 'the order is wrong', settleable: false },
+      ],
+    });
+    await close();
+    decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+
+    // An approval is not a refusal: the PM settles the debt from here, and
+    // reading the two the same way would close a tour over a change nobody
+    // made.
+    expect((await close()).kind).toBe('gated');
   });
 
   it('does not clear the block when a debt sent it to a gate', async () => {

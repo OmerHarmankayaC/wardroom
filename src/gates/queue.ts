@@ -316,6 +316,34 @@ export function authorizationFor(root: string, query: AuthorizationQuery): GateE
 }
 
 /**
+ * The owner's refusal of exactly this question, or null (SDD §4.6 step 3,
+ * D-79).
+ *
+ * Matched on the same key an approval is, the class and the `what` line and
+ * the tour, for the same reason: nothing holds the question verbatim outside
+ * the entry, and `what` is derived deterministically from it (§3.1, D-67).
+ *
+ * This is not the mirror of {@link authorizationFor} and must not be used as
+ * one. An approval authorizes an action and is spent by it; a refusal
+ * authorizes nothing and is never reused to deny a later call, which §3.2
+ * routes to a new job instead. What a refusal settles is a closure debt, which
+ * is a question about a document and not a call, and D-79 is the one place a
+ * rejection means anything after the fact.
+ */
+export function refusalOf(root: string, query: AuthorizationQuery): GateEntry | null {
+  const refused = list(root, { includeResolved: true }).filter(
+    (entry) =>
+      entry.status === 'rejected' &&
+      entry.gateClass === query.gateClass &&
+      entry.what === query.what &&
+      entry.tourId === query.tourId,
+  );
+  // Oldest first, as above: an owner who answered twice has their first
+  // answer read first.
+  return refused[0] ?? null;
+}
+
+/**
  * Spends an approval on the call it authorized (SDD §3.2, D-61).
  *
  * The line goes into the audit log and nothing is written to the entry,
