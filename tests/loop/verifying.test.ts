@@ -45,6 +45,7 @@ const VERIFYING_MARKER: StateMarker = {
   interruptedState: null,
   attemptCount: 0,
   gateId: null,
+  disposition: null,
   headCommit: null,
   updatedAt: '2026-08-21T09:00:00.000Z',
 };
@@ -79,7 +80,7 @@ afterEach(() => {
 });
 
 function verify(runVerification: VerifyRunner, marker = VERIFYING_MARKER) {
-  return driveVerifying({ root, config, marker, runVerification, now: NOW });
+  return driveVerifying({ root, config, marker, disposition: 'closed', runVerification, now: NOW });
 }
 
 describe('green exits to CLOSING', () => {
@@ -155,6 +156,7 @@ describe('a failure records what it was, counts, and enters FAILED', () => {
       root,
       config: { ...config, verify: ['a', 'b'] },
       marker: VERIFYING_MARKER,
+      disposition: 'closed',
       runVerification: (_root, commands) => {
         seen.push(commands);
         return { kind: 'green', ran: [...commands] };

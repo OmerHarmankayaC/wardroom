@@ -79,6 +79,9 @@ function markerFor(state: TourState, overrides: Partial<StateMarker> = {}): Stat
     // A gate-bearing marker names the entry it waits on (SDD §3.3, D-62).
     // The default names one the queue does not hold, which is its own case.
     gateId: state === 'GATED' || state === 'PARKED' ? 'g-20260821T090000Z-none' : null,
+    // CLOSING carries the disposition it is closing under, and no other state
+    // carries one (SDD §3.3, D-92).
+    disposition: state === 'CLOSING' ? 'closed' : null,
     headCommit: head(),
     updatedAt: '2026-08-20T09:00:00.000Z',
   };

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -93,6 +93,12 @@ function writeProgress(open: OpenTourBlock | null): void {
       '',
       'none',
       '',
+      // A carried tour writes its unfinished jobs here (§4.6 step 5, D-66),
+      // so the fixture carries the section a real PROGRESS does.
+      '## Pending',
+      '',
+      'nothing',
+      '',
     ].join('\n'),
   );
 }
@@ -143,6 +149,7 @@ function marker(overrides: Partial<StateMarker>): StateMarker {
     interruptedState: null,
     attemptCount: 0,
     gateId: null,
+    disposition: null,
     headCommit: head(),
     updatedAt: '2026-08-21T09:00:00.000Z',
     ...overrides,
@@ -395,25 +402,43 @@ describe('a decided gate is applied from the entry', () => {
   });
 });
 
-describe('a closure that could not know its disposition says so', () => {
-  it('reports the assumption rather than recording it as a fact', async () => {
-    // Resuming straight into CLOSING: nothing on disk carries the disposition
-    // once the decision that set it has been applied, so `closed` is assumed.
-    writeMarker(root, marker({ state: 'CLOSING', tourId: TOUR, jobIndex: 3 }));
+describe('a cycle that resumes into CLOSING reads the disposition it died under', () => {
+  /**
+   * D-92. Before the marker carried the disposition this was the one thing a
+   * resumed closure could not know: `gate_id` is cleared the moment a decision
+   * is applied (D-62), so an abandoned tour had no key left to find its entry
+   * with and would have closed as `closed`, with the tour log, which is the
+   * permanent record, saying so.
+   */
+  for (const disposition of ['abandoned', 'carried'] as const) {
+    it(`closes a ${disposition} tour as ${disposition}, with no gate entry to read`, async () => {
+      writeMarker(root, marker({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition }));
+      // Nothing is enqueued: the point is that the answer survives without an
+      // entry, which is what the marker field is for.
+      expect(readdirSync(wardroomPaths(root).gatesDir)).toEqual([]);
+
+      const doubles = sessions();
+      const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+      expect(outcome.kind).toBe('idle');
+      expect(outcome.disposition).toBe(disposition);
+      expect(outcome.reason).toBeNull();
+    });
+  }
+
+  it('leaves no disposition on the marker once the tour reaches IDLE', async () => {
+    writeMarker(
+      root,
+      marker({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition: 'carried' }),
+    );
 
     const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
 
-    expect(outcome.kind).toBe('idle');
-    expect(outcome.disposition).toBe('closed');
-    expect(outcome.reason).toMatch(/not recoverable from disk/);
-  });
-
-  it('says nothing where the cycle established the disposition itself', async () => {
-    writeMarker(root, marker({ state: 'IDLE' }));
-
-    const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
-
-    expect(outcome.reason).toBeNull();
+    expect(outcome.marker?.state).toBe('IDLE');
+    expect(outcome.marker?.disposition).toBeNull();
+    // Read back from disk, because a verdict left standing there is one the
+    // next entry into CLOSING would find already answered.
+    expect(readMarker(root)).toMatchObject({ kind: 'ok', marker: { disposition: null } });
   });
 });
 

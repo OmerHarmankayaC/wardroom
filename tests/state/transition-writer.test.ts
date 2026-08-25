@@ -65,6 +65,7 @@ const START: StateMarker = {
   interruptedState: null,
   attemptCount: 0,
   gateId: null,
+  disposition: null,
   headCommit: null,
   updatedAt: '2026-08-21T08:00:00.000Z',
 };
@@ -125,7 +126,12 @@ describe('the writer walks a script it did not produce', () => {
     const count = markerWrites();
 
     expect(() =>
-      advance(root, START, { type: 'green' }, { attemptBudget: script.attemptBudget }),
+      advance(
+        root,
+        START,
+        { type: 'green', disposition: 'closed' },
+        { attemptBudget: script.attemptBudget },
+      ),
     ).toThrowError(IllegalTransitionError);
     expect(readMarker(root)).toEqual(before);
     expect(markerWrites()).toBe(count);

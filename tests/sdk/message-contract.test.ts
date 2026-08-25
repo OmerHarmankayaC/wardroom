@@ -210,6 +210,26 @@ const REPO_ROOT = resolve(import.meta.dirname, '../..');
  * also what `npm ci` writes and what the type assertions above were checked
  * against.
  */
+/**
+ * The manifest's requirement for the SDK, as written (D-91).
+ *
+ * The lockfile pins for `npm ci` and not for `npm install`, so a range in the
+ * manifest let a contributor drift onto a version Appendix A was never
+ * verified against while every document said the version was pinned. A caret
+ * is that rule's opposite expressed in the one file a package manager reads.
+ */
+function manifestSdkRange(): string {
+  const manifestPath = resolve(REPO_ROOT, 'package.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+  };
+  const range = manifest.dependencies?.['@anthropic-ai/claude-agent-sdk'];
+  if (typeof range !== 'string') {
+    throw new Error(`no @anthropic-ai/claude-agent-sdk dependency in ${manifestPath}`);
+  }
+  return range;
+}
+
 function installedSdkVersion(): string {
   const manifestPath = resolve(
     REPO_ROOT,
@@ -225,6 +245,13 @@ function installedSdkVersion(): string {
 describe('the SDK message contract the assembly reads', () => {
   it('runs against the version Appendix A was verified against', () => {
     expect(installedSdkVersion()).toBe(VERIFIED_AGAINST);
+  });
+
+  it('is pinned exactly in the manifest, not by a range the lockfile happens to satisfy', () => {
+    // Asserted as an exact equality rather than by testing for the absence of
+    // a caret: `>=0.3.238`, `0.3.x` and `latest` are all ranges too, and a
+    // check that only knew about `^` would pass on every one of them (D-91).
+    expect(manifestSdkRange()).toBe(VERIFIED_AGAINST);
   });
 
   it('is reached by the green definition, which is what checks its assertions', () => {

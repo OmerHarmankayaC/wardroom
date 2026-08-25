@@ -82,6 +82,7 @@ const EXECUTING_MARKER: StateMarker = {
   interruptedState: null,
   attemptCount: 0,
   gateId: null,
+  disposition: null,
   headCommit: null,
   updatedAt: '2026-08-21T08:00:00.000Z',
 };

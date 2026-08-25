@@ -411,6 +411,11 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
         type: 'decide',
         gateClass: classification.gateClass,
         approved: waited.decided.status === 'approved',
+        // Returning to CLOSING is an entry into CLOSING, which carries a
+        // disposition (§3.3, D-92); raising the gate dropped it. It is taken
+        // from the marker the gate was raised on, which is the only reading of
+        // it this process has, rather than defaulted to `closed`.
+        ...(current.disposition === null ? {} : { disposition: current.disposition }),
       });
       return decisionOutcome(waited.decided);
     } catch (error) {

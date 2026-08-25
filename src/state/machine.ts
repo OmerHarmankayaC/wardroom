@@ -1,5 +1,12 @@
 import type { GateClass } from '../gates/schema.js';
-import { GATE_BEARING_STATES, type StateMarker, type TourState, writeMarker } from './marker.js';
+import {
+  DISPOSITION_BEARING_STATES,
+  GATE_BEARING_STATES,
+  type StateMarker,
+  type TourDisposition,
+  type TourState,
+  writeMarker,
+} from './marker.js';
 
 /**
  * The tour state machine (SDD §3.2) as a pure module. Five sequential phases
@@ -56,8 +63,18 @@ export type TourEvent =
   | { readonly type: 'job-boundary'; readonly jobIndex: number }
   /** EXECUTING to VERIFYING: every job done and committed (§4.2). */
   | { readonly type: 'jobs-done' }
-  /** VERIFYING to CLOSING: every command in the green definition passed. */
-  | { readonly type: 'green' }
+  /**
+   * VERIFYING to CLOSING: every command in the green definition passed.
+   *
+   * It carries the disposition, because this is an entry into CLOSING and
+   * CLOSING carries one (§3.3, D-92). `EXECUTING` is what knows it: a tour the
+   * usage ceiling ended at a job boundary is `carried` and one that ran its
+   * list out is `closed` (D-66), and the state that decides it is the state
+   * that has to hand it on. Naming it here rather than defaulting to `closed`
+   * is the whole of D-92: a default is exactly the wrong answer that was being
+   * recorded as a fact in the permanent log.
+   */
+  | { readonly type: 'green'; readonly disposition: TourDisposition }
   /** VERIFYING to FAILED: a command failed; the output feeds the retry. */
   | { readonly type: 'verification-failed' }
   /** FAILED to EXECUTING while attempt_count is under the budget (FR-1.3). */
@@ -109,6 +126,16 @@ export type TourEvent =
       readonly type: 'decide';
       readonly gateClass: GateClass;
       readonly approved: boolean;
+      /**
+       * The disposition to re-enter `CLOSING` under, for a gate raised from
+       * `CLOSING` and approved or rejected (§4.6 step 3, D-75, D-79).
+       *
+       * Required on that one route and refused on every other, because a
+       * decision returning to CLOSING is an entry into CLOSING and the marker
+       * carries a disposition there (§3.3, D-92). A tour-budget rejection does
+       * not use it: that route knows its own answer, and it is `abandoned`.
+       */
+      readonly disposition?: TourDisposition;
     }
   /** CLOSING to IDLE: log written, debts settled, open-tour block cleared. */
   | { readonly type: 'close' };
@@ -137,9 +164,12 @@ export interface TransitionRules {
 export interface Transition {
   readonly marker: StateMarker;
   /**
-   * A tour-budget rejection routes to the abandoned closing (D-35). The
-   * disposition is not in the marker: the rejected gate entry on disk already
-   * carries it, and resumption reconstructs it from there (FR-1.2).
+   * A tour-budget rejection routes to the abandoned closing (D-35).
+   *
+   * It says which route the transition took, and it is not where the
+   * disposition is read from: since D-92 the marker carries that, and closure
+   * reads it there. Two records of one fact is what D-92 closed, so nothing
+   * downstream may take this flag for the disposition.
    */
   readonly abandoned: boolean;
   /** A dirty-tree rejection leaves IDLE and the run exits (FR-1.6). */
@@ -311,8 +341,17 @@ function decide(
     // Rejection abandons the tour (D-35): the closing path writes the log,
     // clears the block and reaches IDLE. Returning to FAILED with the budget
     // spent would re-raise the same gate indefinitely.
+    //
+    // The disposition is written here rather than left on the gate entry,
+    // which is what D-92 changed: D-62 clears `gate_id` on this very
+    // transition, so a cycle that died between here and closure had no key
+    // left to find the entry with and would have closed the tour as `closed`.
     return {
-      marker: stamped(marker, now, { state: 'CLOSING', interruptedState: null }),
+      marker: stamped(marker, now, {
+        state: 'CLOSING',
+        interruptedState: null,
+        disposition: 'abandoned',
+      }),
       abandoned: true,
       exits: false,
     };
@@ -336,6 +375,42 @@ function decide(
   // rejection is recorded as a new job by the loop, not by the machine
   // (§3.2). The uncommitted diff, where there is one, travels with the gate
   // (D-24).
+  //
+  // Returning to CLOSING is an entry into CLOSING, so it carries a
+  // disposition (§3.3, D-92). It is asked for rather than defaulted for the
+  // same reason `green` asks: a default here would record an abandoned or
+  // carried tour as an ordinary one in the permanent log.
+  if (interrupted !== 'CLOSING' && event.disposition !== undefined) {
+    // Refused rather than ignored. Every other state carries no disposition
+    // (§3.3, D-92), so a decision offering one here has been built against a
+    // route that does not exist, and the invariant below would have dropped it
+    // without a word: a caller would be told its answer was taken.
+    throw new IllegalTransitionError(
+      marker.state,
+      'decide',
+      `only a decision returning to CLOSING carries a disposition, and this one returns to ${interrupted} (SDD §3.3, D-92)`,
+    );
+  }
+
+  if (interrupted === 'CLOSING') {
+    if (event.disposition === undefined) {
+      throw new IllegalTransitionError(
+        marker.state,
+        'decide',
+        'a decision returning to CLOSING is an entry into CLOSING, which carries the disposition it is closing under (SDD §3.3, D-92)',
+      );
+    }
+    return {
+      marker: stamped(marker, now, {
+        state: interrupted,
+        interruptedState: null,
+        disposition: event.disposition,
+      }),
+      abandoned: false,
+      exits: false,
+    };
+  }
+
   return {
     marker: stamped(marker, now, { state: interrupted, interruptedState: null }),
     abandoned: false,
@@ -359,6 +434,28 @@ function withGateRule(marker: StateMarker): StateMarker {
 }
 
 /**
+ * D-92's invariant, applied the same way and in the same place as D-62's.
+ *
+ * A disposition is a verdict about a closure, so it belongs to the state that
+ * is closing and to no other. Left standing across a transition out of
+ * `CLOSING`, it would be waiting on the next entry into `CLOSING` with an
+ * answer nothing had decided this time round, which is the same class of
+ * defect as a stale `gate_id`: a record pointing at something that is over.
+ *
+ * A gate raised from `CLOSING` therefore drops it, and the decision that
+ * returns carries it again (see {@link decide}).
+ */
+function withDispositionRule(marker: StateMarker): StateMarker {
+  if (DISPOSITION_BEARING_STATES.includes(marker.state)) return marker;
+  return marker.disposition === null ? marker : { ...marker, disposition: null };
+}
+
+/** Both marker invariants, so no result can be given one and not the other. */
+function withInvariants(marker: StateMarker): StateMarker {
+  return withDispositionRule(withGateRule(marker));
+}
+
+/**
  * Applies one event to a marker under the §3.2 table. Pure: no clock, no
  * disk, no git. An illegal pair throws {@link IllegalTransitionError} naming
  * the transitions the state does accept.
@@ -374,14 +471,14 @@ export function transition(
   }
 
   const move = (changes: Partial<StateMarker>): Transition => ({
-    marker: withGateRule(stamped(marker, now, changes)),
+    marker: withInvariants(stamped(marker, now, changes)),
     abandoned: false,
     exits: false,
   });
 
   switch (event.type) {
     case 'open':
-      return { marker: withGateRule(opening(marker, now)), abandoned: false, exits: false };
+      return { marker: withInvariants(opening(marker, now)), abandoned: false, exits: false };
     case 'plan-complete': {
       if (event.tourId.trim() === '') {
         throw new IllegalTransitionError(
@@ -410,7 +507,7 @@ export function transition(
     case 'jobs-done':
       return move({ state: 'VERIFYING' });
     case 'green':
-      return move({ state: 'CLOSING' });
+      return move({ state: 'CLOSING', disposition: event.disposition });
     case 'verification-failed':
       // §4.3: capture the failure, increment attempt_count, go to FAILED.
       return move({ state: 'FAILED', attemptCount: marker.attemptCount + 1 });
@@ -428,7 +525,7 @@ export function transition(
       return move({ state: 'VERIFYING' });
     case 'raise-gate':
       return {
-        marker: withGateRule(raiseGate(marker, event, rules, now)),
+        marker: withInvariants(raiseGate(marker, event, rules, now)),
         abandoned: false,
         exits: false,
       };
@@ -438,10 +535,10 @@ export function transition(
       return move({ state: 'PARKED' });
     case 'decide': {
       const decided = decide(marker, event, now);
-      return { ...decided, marker: withGateRule(decided.marker) };
+      return { ...decided, marker: withInvariants(decided.marker) };
     }
     case 'close':
-      return { marker: withGateRule(idle(marker, now)), abandoned: false, exits: false };
+      return { marker: withInvariants(idle(marker, now)), abandoned: false, exits: false };
   }
 }
 

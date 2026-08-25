@@ -103,6 +103,7 @@ const EXECUTING_MARKER: StateMarker = {
   interruptedState: null,
   attemptCount: 2,
   gateId: null,
+  disposition: null,
   headCommit: null,
   updatedAt: '2026-08-21T08:00:00.000Z',
 };
@@ -676,6 +677,38 @@ describe('the marker follows the gate, so a death cannot resume past it', () => 
     const read = readMarker(root);
     expect(read.kind === 'ok' && read.marker.state).toBe('EXECUTING');
     expect(read.kind === 'ok' && read.marker.gateId).toBeNull();
+  });
+
+  it('returns a gate raised from CLOSING under the disposition it left under (D-92)', async () => {
+    // The one route where returning to the interrupted state has to carry
+    // something back with it: CLOSING carries a disposition and GATED does not,
+    // so the gate drops it on the way out and the decision has to restore it.
+    // Read off the marker the gate was raised on, which is the only reading of
+    // it this process has.
+    currentMarker = {
+      ...EXECUTING_MARKER,
+      state: 'CLOSING',
+      interruptedState: null,
+      disposition: 'carried',
+    };
+    writeMarker(root, currentMarker);
+
+    let answered = false;
+    const releasing = interceptor({
+      onSleep: () => {
+        if (answered) return;
+        answered = true;
+        decide(root, list(root)[0]?.gateId ?? '', 'approved', 'owner');
+      },
+    });
+
+    await releasing.hook(toolCall('Bash', { command: 'git push origin main' }), 'tu-1', {
+      signal: new AbortController().signal,
+    });
+
+    const read = readMarker(root);
+    expect(read.kind === 'ok' && read.marker.state).toBe('CLOSING');
+    expect(read.kind === 'ok' && read.marker.disposition).toBe('carried');
   });
 
   it('writes every marker through the machine, so no state is invented', async () => {

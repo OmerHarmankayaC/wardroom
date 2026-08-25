@@ -218,6 +218,7 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
         interruptedState: null,
         attemptCount: 0,
         gateId: null,
+        disposition: null,
         headCommit: head,
         updatedAt: now.toISOString(),
       },
@@ -289,6 +290,9 @@ function reconstructed(head: string | null, now: Date): StateMarker {
     interruptedState: null,
     attemptCount: 0,
     gateId: null,
+    // A state reconstructed from a dirty tree is EXECUTING, which carries no
+    // disposition; nothing here is closing (§3.3, D-92).
+    disposition: null,
     headCommit: head,
     updatedAt: now.toISOString(),
   };

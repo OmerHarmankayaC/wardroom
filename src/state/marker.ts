@@ -47,6 +47,16 @@ export const GATE_BEARING_STATES: readonly TourState[] = ['GATED', 'PARKED'];
 export const TOUR_DISPOSITIONS = ['closed', 'abandoned', 'carried'] as const;
 export type TourDisposition = (typeof TOUR_DISPOSITIONS)[number];
 
+/**
+ * The one state that carries a disposition (SDD §3.3, D-92).
+ *
+ * A list of one, written as a list because `gate_id` above is the same rule
+ * over two states and the two invariants are checked by the same code below. A
+ * second state joining it would then arrive with its check already written,
+ * which is the half that was forgotten last time.
+ */
+export const DISPOSITION_BEARING_STATES: readonly TourState[] = ['CLOSING'];
+
 export interface StateMarker {
   readonly state: TourState;
   readonly tourId: string | null;
@@ -65,6 +75,20 @@ export interface StateMarker {
    * neither "the pending one" nor "the newest one" identifies it.
    */
   readonly gateId: string | null;
+  /**
+   * Which of the three closures this is (SDD §3.3, D-92). Set on entry into
+   * `CLOSING` and null in every other state.
+   *
+   * The state that decides the disposition writes it, which is also the
+   * transition that knows it. Until this field existed only one of the three
+   * was recoverable after a death: an abandoned tour carried its disposition
+   * on the rejected tour-budget entry, and D-62 clears `gate_id` the moment
+   * that decision is applied, so by the time closure ran there was no key left
+   * to find the entry with. The tour would have closed as `closed` and the
+   * tour log, which is the permanent record, would have said so. A carried
+   * tour (D-66) had the same hole one route over.
+   */
+  readonly disposition: TourDisposition | null;
   readonly headCommit: string | null;
   readonly updatedAt: string;
 }
@@ -86,6 +110,7 @@ interface OnDiskMarker {
   interrupted_state: string | null;
   attempt_count: number;
   gate_id: string | null;
+  disposition: string | null;
   head_commit: string | null;
   updated_at: string;
 }
@@ -98,6 +123,7 @@ function toOnDisk(marker: StateMarker): OnDiskMarker {
     interrupted_state: marker.interruptedState,
     attempt_count: marker.attemptCount,
     gate_id: marker.gateId,
+    disposition: marker.disposition,
     head_commit: marker.headCommit,
     updated_at: marker.updatedAt,
   };
@@ -115,6 +141,10 @@ export function writeMarker(root: string, marker: StateMarker): void {
 
 function isTourState(value: unknown): value is TourState {
   return typeof value === 'string' && (TOUR_STATES as readonly string[]).includes(value);
+}
+
+function isTourDisposition(value: unknown): value is TourDisposition {
+  return typeof value === 'string' && (TOUR_DISPOSITIONS as readonly string[]).includes(value);
 }
 
 function isOptionalInteger(value: unknown): value is number | null {
@@ -146,6 +176,9 @@ function schemaProblem(raw: unknown): string | null {
     return 'attempt_count must be a non-negative whole number';
   }
   if (!isOptionalString(record.gate_id)) return 'gate_id must be a string or null';
+  if (record.disposition !== null && !isTourDisposition(record.disposition)) {
+    return `disposition must be one of ${TOUR_DISPOSITIONS.join(', ')} or null`;
+  }
   if (!isOptionalString(record.head_commit)) return 'head_commit must be a string or null';
   if (typeof record.updated_at !== 'string' || record.updated_at === '') {
     return 'updated_at must be a timestamp';
@@ -164,6 +197,19 @@ function schemaProblem(raw: unknown): string | null {
   }
   if (!waiting && record.gate_id !== null) {
     return `gate_id is null outside ${GATE_BEARING_STATES.join(' and ')}, and ${record.state} carries ${JSON.stringify(record.gate_id)} (SDD §3.3, D-62)`;
+  }
+
+  // D-92, both directions, for the same reason D-62 is checked both ways. A
+  // CLOSING marker with no disposition sends closure back to deriving one,
+  // which is what left two of the three unrecoverable; a disposition on any
+  // other state is a closure verdict recorded before the closure, and the next
+  // entry into CLOSING would find it already answered.
+  const closing = DISPOSITION_BEARING_STATES.includes(record.state);
+  if (closing && record.disposition === null) {
+    return `${record.state} must carry the disposition it is closing under, one of ${TOUR_DISPOSITIONS.join(', ')} (SDD §3.3, D-92)`;
+  }
+  if (!closing && record.disposition !== null) {
+    return `disposition is null outside ${DISPOSITION_BEARING_STATES.join(' and ')}, and ${record.state} carries ${JSON.stringify(record.disposition)} (SDD §3.3, D-92)`;
   }
   return null;
 }
@@ -206,6 +252,7 @@ export function readMarker(root: string): MarkerRead {
       interruptedState: record.interrupted_state as TourState | null,
       attemptCount: record.attempt_count,
       gateId: record.gate_id,
+      disposition: record.disposition as TourDisposition | null,
       headCommit: record.head_commit,
       updatedAt: record.updated_at,
     },

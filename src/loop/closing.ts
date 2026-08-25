@@ -44,7 +44,6 @@ export interface DriveClosingInput {
   /** The marker as resumption left it. Must read `CLOSING`. */
   readonly marker: StateMarker;
   readonly session: ClosingSession;
-  readonly disposition: TourDisposition;
   readonly now?: () => Date;
 }
 
@@ -134,6 +133,17 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
     throw new Error('a tour closing has an identifier: it was minted when its record was created.');
   }
 
+  // Read, not derived and not passed in beside the marker (D-92, §4.6 step 5).
+  // The state that decided the disposition wrote it here, and this is the one
+  // place it is read; a second source travelling alongside the marker would be
+  // a second answer, and a resumed cycle would have only one of them.
+  const disposition = input.marker.disposition;
+  if (disposition === null) {
+    throw new Error(
+      `${tourId} is closing under no disposition. The marker carries one in CLOSING and the schema refuses a marker without it, so an absent one here is a marker built past the schema rather than read through it (SDD §3.3, §4.6 step 5, D-92).`,
+    );
+  }
+
   const now = input.now ?? (() => new Date());
   const rules = { attemptBudget: input.config.attemptBudget };
 
@@ -164,9 +174,9 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
   const block = read.kind === 'open' ? read.block : null;
 
   // Step 4 and 5. The log is the permanent record; the block is not.
-  const tourLog = renderTourLog(tourId, report, claimCheck, input.disposition, block);
+  const tourLog = renderTourLog(tourId, report, claimCheck, disposition, block);
   await input.session.writeTourLog({ tourId, body: tourLog });
-  if (input.disposition === 'carried' && block !== null) {
+  if (disposition === 'carried' && block !== null) {
     appendPending(input.root, input.config, tourId, unfinished(block));
   }
 
@@ -183,7 +193,7 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
     kind: 'closed',
     marker,
     claimCheck,
-    disposition: input.disposition,
+    disposition,
     tourLog,
     // Step 8. Closure does not commit: it says which occasion the commit gate
     // is to be asked about, and the gate decides (§4.5, D-76).
@@ -191,7 +201,7 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
       kind: 'closure',
       tourId,
       state: 'CLOSING',
-      disposition: input.disposition,
+      disposition,
     },
   };
 }

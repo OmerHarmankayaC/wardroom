@@ -809,6 +809,7 @@ describe('green is observed, not claimed (D-58)', () => {
       interruptedState: null,
       attemptCount: 2,
       gateId: null,
+      disposition: null,
       headCommit: null,
       updatedAt: '2026-08-21T09:00:00.000Z',
     };

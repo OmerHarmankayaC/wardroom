@@ -29,6 +29,7 @@ const marker: StateMarker = {
   interruptedState: null,
   attemptCount: 0,
   gateId: null,
+  disposition: null,
   headCommit: 'a'.repeat(40),
   updatedAt: '2026-08-20T09:00:00.000Z',
 };
@@ -53,6 +54,7 @@ describe('writeMarker', () => {
 
     expect(Object.keys(onDisk).sort()).toEqual([
       'attempt_count',
+      'disposition',
       'gate_id',
       'head_commit',
       'interrupted_state',
@@ -129,5 +131,81 @@ describe('readMarker', () => {
     const read = readMarker(root);
 
     expect(read.kind === 'unreadable' && read.reason.length > 0).toBe(true);
+  });
+});
+
+/**
+ * The disposition rule (SDD §3.3, D-92), checked in both directions for the
+ * reason the gate rule is: a CLOSING marker with no disposition sends closure
+ * back to deriving one, which left two of the three unrecoverable, and a
+ * disposition anywhere else is a closure verdict recorded before the closure.
+ *
+ * The markers below are hand-written on-disk shapes rather than serialized
+ * through `writeMarker`, because the writer would refuse to build most of
+ * them and a check fed only its own producer's output would never meet one
+ * (D-55).
+ */
+describe('disposition is mandatory in CLOSING and null everywhere else', () => {
+  const onDisk = (overrides: Record<string, unknown>) =>
+    JSON.stringify({
+      state: 'CLOSING',
+      tour_id: 'tour-1',
+      job_index: 3,
+      interrupted_state: null,
+      attempt_count: 0,
+      gate_id: null,
+      disposition: 'closed',
+      head_commit: null,
+      updated_at: '2026-08-20T09:00:00.000Z',
+      ...overrides,
+    });
+
+  for (const disposition of ['closed', 'abandoned', 'carried'] as const) {
+    it(`reads a CLOSING marker carrying ${disposition}`, () => {
+      corrupt(onDisk({ disposition }));
+
+      const read = readMarker(root);
+
+      expect(read.kind === 'ok' && read.marker.disposition).toBe(disposition);
+    });
+  }
+
+  it('refuses a CLOSING marker that carries none', () => {
+    corrupt(onDisk({ disposition: null }));
+
+    const read = readMarker(root);
+
+    expect(read.kind).toBe('unreadable');
+    expect(read.kind === 'unreadable' && read.reason).toMatch(/disposition/);
+  });
+
+  it('refuses a disposition that is not one of the three', () => {
+    corrupt(onDisk({ disposition: 'parked' }));
+
+    expect(readMarker(root).kind).toBe('unreadable');
+  });
+
+  for (const state of ['IDLE', 'PLANNING', 'EXECUTING', 'VERIFYING', 'FAILED'] as const) {
+    it(`refuses a ${state} marker that carries one`, () => {
+      corrupt(onDisk({ state, disposition: 'abandoned' }));
+
+      const read = readMarker(root);
+
+      expect(read.kind).toBe('unreadable');
+      expect(read.kind === 'unreadable' && read.reason).toMatch(/disposition/);
+    });
+  }
+
+  it('refuses a gated marker that carries one, since the gate is not the closure', () => {
+    corrupt(
+      onDisk({
+        state: 'GATED',
+        interrupted_state: 'CLOSING',
+        gate_id: 'g-20260821T090000Z-aaaa',
+        disposition: 'carried',
+      }),
+    );
+
+    expect(readMarker(root).kind).toBe('unreadable');
   });
 });

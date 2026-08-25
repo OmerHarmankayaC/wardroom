@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -65,6 +73,7 @@ const CLOSING_MARKER: StateMarker = {
   interruptedState: null,
   attemptCount: 1,
   gateId: null,
+  disposition: 'closed',
   headCommit: null,
   updatedAt: '2026-08-21T09:00:00.000Z',
 };
@@ -160,7 +169,6 @@ function close(overrides: Partial<Parameters<typeof driveClosing>[0]> = {}) {
     config,
     marker: CLOSING_MARKER,
     session: pm().session,
-    disposition: 'closed',
     now: NOW,
     ...overrides,
   });
@@ -305,8 +313,42 @@ describe('the closure writes what a later reader needs (§4.6 steps 4 to 7)', ()
     expect(readFileSync(join(root, DOC_ROOT, 'tours', 'tour-9.md'), 'utf8')).toBe(result.tourLog);
   });
 
+  /**
+   * D-92. The disposition is read off the marker, not passed in beside it and
+   * not reconstructed from a gate entry: D-62 clears `gate_id` the moment a
+   * tour-budget rejection is applied, so by the time closure runs there is no
+   * key left to find that entry with. The gates directory is asserted empty
+   * here to make that the actual condition rather than a coincidence.
+   */
+  for (const disposition of ['abandoned', 'carried'] as const) {
+    it(`names a ${disposition} tour ${disposition} in the log, with no gate entry to read`, async () => {
+      expect(readdirSync(wardroomPaths(root).gatesDir)).toEqual([]);
+
+      const result = await close({ marker: { ...CLOSING_MARKER, disposition } });
+
+      expect(result.kind).toBe('closed');
+      expect(result.kind === 'closed' && result.disposition).toBe(disposition);
+      expect(result.tourLog).toContain(`- **Disposition:** ${disposition}`);
+      // And the permanent record on disk says the same, which is the artifact
+      // that was getting it wrong.
+      expect(readFileSync(join(root, DOC_ROOT, 'tours', 'tour-9.md'), 'utf8')).toContain(
+        `- **Disposition:** ${disposition}`,
+      );
+    });
+  }
+
+  it('refuses to close under a marker that names no disposition', async () => {
+    // Not reachable through the schema, which refuses this shape on read; it is
+    // reachable by building a marker in memory, and closure says so rather than
+    // defaulting to `closed`, which is the value that was being written into
+    // the permanent record for two of the three.
+    await expect(close({ marker: { ...CLOSING_MARKER, disposition: null } })).rejects.toThrowError(
+      /disposition/,
+    );
+  });
+
   it('records the disposition in the log', async () => {
-    const result = await close({ disposition: 'carried' });
+    const result = await close({ marker: { ...CLOSING_MARKER, disposition: 'carried' } });
 
     expect(result.kind).toBe('closed');
     expect(result.kind === 'closed' && result.disposition).toBe('carried');
@@ -324,7 +366,7 @@ describe('the closure writes what a later reader needs (§4.6 steps 4 to 7)', ()
       }),
     );
 
-    await close({ disposition: 'carried' });
+    await close({ marker: { ...CLOSING_MARKER, disposition: 'carried' } });
 
     const progress = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
     expect(progress).toMatch(/Second job/);
@@ -427,7 +469,7 @@ describe('a carried tour hands its unfinished jobs to its successor (D-66)', () 
       }),
     );
 
-    await close({ disposition: 'carried' });
+    await close({ marker: { ...CLOSING_MARKER, disposition: 'carried' } });
 
     const progress = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
     expect(progress).toMatch(/Carried from tour-9/);
@@ -439,7 +481,7 @@ describe('a carried tour hands its unfinished jobs to its successor (D-66)', () 
   it('leaves Pending alone for a tour that finished its list', async () => {
     const before = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
 
-    await close({ disposition: 'closed' });
+    await close({ marker: { ...CLOSING_MARKER, disposition: 'closed' } });
 
     const after = readFileSync(join(root, DOC_ROOT, 'PROGRESS.md'), 'utf8');
     expect(after).not.toMatch(/Carried from/);
@@ -461,7 +503,7 @@ describe('a carried tour hands its unfinished jobs to its successor (D-66)', () 
       readFileSync(path, 'utf8').replace('nothing', '- something the owner wrote'),
     );
 
-    await close({ disposition: 'carried' });
+    await close({ marker: { ...CLOSING_MARKER, disposition: 'carried' } });
 
     const progress = readFileSync(path, 'utf8');
     expect(progress).toMatch(/something the owner wrote/);
@@ -469,7 +511,7 @@ describe('a carried tour hands its unfinished jobs to its successor (D-66)', () 
   });
 
   it('reaches IDLE by the ordinary route, with no gate raised', async () => {
-    const result = await close({ disposition: 'carried' });
+    const result = await close({ marker: { ...CLOSING_MARKER, disposition: 'carried' } });
 
     expect(result.marker.state).toBe('IDLE');
     expect(list(root, { includeResolved: true })).toEqual([]);
