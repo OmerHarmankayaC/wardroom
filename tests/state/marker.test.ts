@@ -135,17 +135,20 @@ describe('readMarker', () => {
 });
 
 /**
- * The disposition rule (SDD §3.3, D-92), checked in both directions for the
- * reason the gate rule is: a CLOSING marker with no disposition sends closure
- * back to deriving one, which left two of the three unrecoverable, and a
- * disposition anywhere else is a closure verdict recorded before the closure.
+ * The disposition's lifetime (SDD §3.3, D-92 corrected by D-101).
+ *
+ * The rule is a lifetime and not a state test: written at the transition that
+ * decides it, carried through every state after that, cleared at `IDLE`. Only
+ * two ends of it are fixed enough for a schema to check, and both were failures
+ * in practice: a `CLOSING` marker with no disposition sends closure back to
+ * deriving one, and a verdict surviving into `IDLE` waits for the next tour to
+ * find its own question already answered.
  *
  * The markers below are hand-written on-disk shapes rather than serialized
- * through `writeMarker`, because the writer would refuse to build most of
- * them and a check fed only its own producer's output would never meet one
- * (D-55).
+ * through `writeMarker`, because the writer would refuse to build most of them
+ * and a check fed only its own producer's output would never meet one (D-55).
  */
-describe('disposition is mandatory in CLOSING and null everywhere else', () => {
+describe('the disposition is carried from where it is decided until IDLE', () => {
   const onDisk = (overrides: Record<string, unknown>) =>
     JSON.stringify({
       state: 'CLOSING',
@@ -185,27 +188,34 @@ describe('disposition is mandatory in CLOSING and null everywhere else', () => {
     expect(readMarker(root).kind).toBe('unreadable');
   });
 
-  for (const state of ['IDLE', 'PLANNING', 'EXECUTING', 'VERIFYING', 'FAILED'] as const) {
-    it(`refuses a ${state} marker that carries one`, () => {
-      corrupt(onDisk({ state, disposition: 'abandoned' }));
+  /**
+   * Every state between the decision and the closure, which the rule this
+   * replaces refused. A carried tour decides at an `EXECUTING` boundary and
+   * passes through `VERIFYING`; an abandoned one decides at a gate rejection;
+   * a `scope-change` gate raised from `CLOSING` passes through `GATED`.
+   */
+  for (const [state, extra] of [
+    ['EXECUTING', {}],
+    ['VERIFYING', {}],
+    ['FAILED', { attempt_count: 1 }],
+    ['GATED', { interrupted_state: 'CLOSING', gate_id: 'g-20260821T090000Z-aaaa' }],
+    ['PARKED', { interrupted_state: 'CLOSING', gate_id: 'g-20260821T090000Z-aaaa' }],
+  ] as const) {
+    it(`reads a ${state} marker carrying a disposition already decided`, () => {
+      corrupt(onDisk({ state, disposition: 'carried', ...extra }));
 
       const read = readMarker(root);
 
-      expect(read.kind).toBe('unreadable');
-      expect(read.kind === 'unreadable' && read.reason).toMatch(/disposition/);
+      expect(read.kind === 'ok' && read.marker.disposition).toBe('carried');
     });
   }
 
-  it('refuses a gated marker that carries one, since the gate is not the closure', () => {
-    corrupt(
-      onDisk({
-        state: 'GATED',
-        interrupted_state: 'CLOSING',
-        gate_id: 'g-20260821T090000Z-aaaa',
-        disposition: 'carried',
-      }),
-    );
+  it('refuses a disposition that survived into IDLE, where the cycle clears it', () => {
+    corrupt(onDisk({ state: 'IDLE', tour_id: null, job_index: null, disposition: 'carried' }));
 
-    expect(readMarker(root).kind).toBe('unreadable');
+    const read = readMarker(root);
+
+    expect(read.kind).toBe('unreadable');
+    expect(read.kind === 'unreadable' && read.reason).toMatch(/cleared at IDLE/);
   });
 });

@@ -355,6 +355,23 @@ describe('the usage ceiling ends the tour carried, at a boundary (D-66)', () => 
 
     expect(ran).toEqual([0, 1, 2]);
     expect(result.carried).toBe(false);
+    // Nothing decided a disposition, so the marker carries none: `closed` is
+    // recorded on entry into CLOSING, where that one is decided (D-101).
+    expect(result.marker.disposition).toBeNull();
+  });
+
+  it('writes the carried disposition at the boundary that decides it (D-101)', async () => {
+    // The window this closes: the fact used to live only in the process until
+    // CLOSING, so a death in VERIFYING closed a carried tour as an ordinary
+    // one, which is the failure D-92 was written to prevent, one route over.
+    const { session } = spendingSession(5);
+
+    const result = await drive(session);
+
+    expect(result.carried).toBe(true);
+    expect(result.marker.disposition).toBe('carried');
+    // On disk, which is the whole point: the next process reads it there.
+    expect(readMarker(root)).toMatchObject({ kind: 'ok', marker: { disposition: 'carried' } });
   });
 
   it('stops at the first boundary where spent plus the largest job reaches it', async () => {

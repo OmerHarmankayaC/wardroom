@@ -87,9 +87,7 @@ describe('the legal transitions of the SDD §3.2 table', () => {
   });
 
   it('VERIFYING goes green into CLOSING', () => {
-    expect(step(at('VERIFYING'), { type: 'green', disposition: 'closed' }).marker.state).toBe(
-      'CLOSING',
-    );
+    expect(step(at('VERIFYING'), { type: 'green' }).marker.state).toBe('CLOSING');
   });
 
   it('VERIFYING fails into FAILED, incrementing attempt_count (SDD §4.3)', () => {
@@ -269,36 +267,24 @@ describe('interrupted_state survives the gate round trips', () => {
     expect(resumed.marker.jobIndex).toBe(3);
   });
 
-  it('refuses a disposition on a decision that does not return to CLOSING (D-92)', () => {
-    // Ignoring it would be the quieter failure: the invariant strips a
-    // disposition outside CLOSING, so a caller that offered one would be told
-    // nothing and would believe its answer had been taken.
-    const gated = step(at('EXECUTING'), {
-      type: 'raise-gate',
-      gateId: GATE_ID,
-      gateClass: 'push',
-    });
+  it('carries the disposition out of CLOSING and back through a gate (D-101)', () => {
+    // The rule this replaces cleared the disposition outside CLOSING, so a
+    // scope-change gate raised from a closing tour dropped a verdict that had
+    // already been decided, and the return had to be handed it back.
+    const closing = at('CLOSING', { disposition: 'carried' });
+    const gated = step(closing, { type: 'raise-gate', gateId: GATE_ID, gateClass: 'scope-change' });
 
-    expect(() =>
-      step(gated.marker, {
-        type: 'decide',
-        gateClass: 'push',
-        approved: true,
-        disposition: 'carried',
-      }),
-    ).toThrowError(IllegalTransitionError);
-  });
+    expect(gated.marker.state).toBe('GATED');
+    expect(gated.marker.disposition).toBe('carried');
 
-  it('refuses a decision returning to CLOSING with no disposition (D-92)', () => {
-    const gated = step(at('CLOSING'), {
-      type: 'raise-gate',
-      gateId: GATE_ID,
+    const resumed = step(gated.marker, {
+      type: 'decide',
       gateClass: 'scope-change',
+      approved: false,
     });
 
-    expect(() =>
-      step(gated.marker, { type: 'decide', gateClass: 'scope-change', approved: false }),
-    ).toThrowError(IllegalTransitionError);
+    expect(resumed.marker.state).toBe('CLOSING');
+    expect(resumed.marker.disposition).toBe('carried');
   });
 
   it('carries through GATED, PARKED and back, however long the park lasted', () => {
@@ -318,9 +304,6 @@ describe('interrupted_state survives the gate round trips', () => {
       type: 'decide',
       gateClass: 'scope-change',
       approved: true,
-      // The return is an entry into CLOSING, which carries a disposition
-      // (§3.3, D-92); the gate dropped it on the way out.
-      disposition: 'closed',
     });
 
     expect(resumed.marker.state).toBe('CLOSING');
@@ -446,7 +429,7 @@ describe('an illegal transition is refused naming the expected ones', () => {
     open: { type: 'open' },
     'plan-complete': { type: 'plan-complete', tourId: 'tour-9' },
     'jobs-done': { type: 'jobs-done' },
-    green: { type: 'green', disposition: 'closed' },
+    green: { type: 'green' },
     'verification-failed': { type: 'verification-failed' },
     retry: { type: 'retry' },
     'raise-gate': { type: 'raise-gate', gateId: GATE_ID, gateClass: 'scope-change' },
@@ -516,7 +499,7 @@ describe('advance writes the marker at every transition (SDD §3.3)', () => {
       { type: 'open' },
       { type: 'plan-complete', tourId: 'tour-3' },
       { type: 'jobs-done' },
-      { type: 'green', disposition: 'closed' },
+      { type: 'green' },
     ];
 
     for (const event of events) {

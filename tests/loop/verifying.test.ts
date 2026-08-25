@@ -80,7 +80,7 @@ afterEach(() => {
 });
 
 function verify(runVerification: VerifyRunner, marker = VERIFYING_MARKER) {
-  return driveVerifying({ root, config, marker, disposition: 'closed', runVerification, now: NOW });
+  return driveVerifying({ root, config, marker, runVerification, now: NOW });
 }
 
 describe('green exits to CLOSING', () => {
@@ -156,7 +156,6 @@ describe('a failure records what it was, counts, and enters FAILED', () => {
       root,
       config: { ...config, verify: ['a', 'b'] },
       marker: VERIFYING_MARKER,
-      disposition: 'closed',
       runVerification: (_root, commands) => {
         seen.push(commands);
         return { kind: 'green', ran: [...commands] };

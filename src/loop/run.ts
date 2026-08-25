@@ -161,23 +161,14 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
 
   let marker: StateMarker = start.marker;
   /**
-   * The disposition the closure ahead is to record (§3.2, §4.6 step 5).
+   * The disposition the closed tour recorded, for the caller's outcome.
    *
-   * Held only between the boundary that decides it and the transition that
-   * writes it into the marker. Everything after that reads the marker, since
-   * D-92 made it the durable home: a cycle that resumed straight into
-   * `CLOSING` reads the disposition it died under rather than assuming one.
-   *
-   * The default is what a cycle that has not reached a deciding boundary
-   * holds, and it is exact for every entry except one: a tour the ceiling
-   * carried (D-66) is decided in `EXECUTING` and recorded on entry into
-   * `CLOSING`, so a death in `VERIFYING` between the two leaves the fact in
-   * neither place and this cycle resumes holding `closed`. That window is
-   * reported as a document debt rather than closed by a rule invented here;
-   * D-92 covers the state that records the disposition and not the state that
-   * decides it, and §4.4's window table does not list the gap.
+   * Read off the drive that closed the tour, not plumbed through the states
+   * between. Since D-101 the marker carries the verdict from the transition
+   * that decided it, so nothing here has to remember it across a state: a
+   * cycle that resumed into `VERIFYING` or `CLOSING` finds it on disk.
    */
-  let disposition: TourDisposition = 'closed';
+  let disposition: TourDisposition | null = null;
   /** Set once the cycle has closed a tour, which is where an invocation ends. */
   let closed = false;
 
@@ -292,11 +283,10 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
         }
 
         case 'VERIFYING': {
-          // The disposition travels with the transition rather than beside it
-          // (D-92). EXECUTING decided it, VERIFYING carries it across, and the
-          // marker records it on entry into CLOSING, which is what makes it
-          // survive a death in between.
-          const result = driveVerifying({ root, config, marker, disposition, now });
+          // Nothing about the disposition passes through here since D-101: a
+          // carried tour wrote its own at the boundary that decided it, and
+          // `green` records `closed` where nothing else has.
+          const result = driveVerifying({ root, config, marker, now });
           marker = result.marker;
           continue;
         }
@@ -315,11 +305,6 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
           // tour would have been written into the permanent log as an ordinary
           // one. Two of the three were unrecoverable at the moment they were
           // needed, which is what the marker field closed.
-          // Taken from the marker before the drive runs, so a cycle that
-          // resumed into CLOSING carries the disposition it died under into a
-          // scope-change gate and back out of it, rather than the default this
-          // variable holds for a cycle that never reached EXECUTING.
-          disposition = marker.disposition ?? disposition;
           const closingTour = marker.tourId;
           if (closingTour === null) {
             return await stopWith(
@@ -346,8 +331,8 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
             closed = true;
           }
           // Where the drive raised a scope-change gate instead, the marker
-          // dropped the disposition on its way out of CLOSING (§3.3) and the
-          // variable above is what carries it back in when the owner decides.
+          // carries the disposition through GATED and back (D-101), so
+          // nothing here holds it for the return.
           continue;
         }
 
@@ -383,10 +368,6 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
               type: 'decide',
               gateClass: entry.gateClass,
               approved: entry.status === 'approved',
-              // Only where the decision returns to CLOSING, which is an entry
-              // into CLOSING and carries one (§3.3, D-92). Every other route
-              // refuses it, so it is spread rather than passed as undefined.
-              ...(marker.interruptedState === 'CLOSING' ? { disposition } : {}),
             },
             rules,
             now(),
@@ -404,8 +385,8 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
             });
           }
           // The disposition is not taken from `decided.abandoned`: the
-          // rejection wrote it into the marker, and the CLOSING branch above
-          // reads it from there. Two records of one fact is what D-92 closed.
+          // rejection wrote it into the marker, and the closing drive reads it
+          // from there. Two records of one fact is what D-92 closed.
           continue;
         }
       }

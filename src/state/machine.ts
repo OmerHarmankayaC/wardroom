@@ -1,6 +1,6 @@
 import type { GateClass } from '../gates/schema.js';
 import {
-  DISPOSITION_BEARING_STATES,
+  DISPOSITION_CLEARED_AT,
   GATE_BEARING_STATES,
   type StateMarker,
   type TourDisposition,
@@ -66,15 +66,24 @@ export type TourEvent =
   /**
    * VERIFYING to CLOSING: every command in the green definition passed.
    *
-   * It carries the disposition, because this is an entry into CLOSING and
-   * CLOSING carries one (§3.3, D-92). `EXECUTING` is what knows it: a tour the
-   * usage ceiling ended at a job boundary is `carried` and one that ran its
-   * list out is `closed` (D-66), and the state that decides it is the state
-   * that has to hand it on. Naming it here rather than defaulting to `closed`
-   * is the whole of D-92: a default is exactly the wrong answer that was being
-   * recorded as a fact in the permanent log.
+   * It records `closed` where nothing has decided otherwise, which is where
+   * that disposition is genuinely decided (§3.3, D-101). A tour the ceiling
+   * carried decided its own at the boundary where the ceiling fired and
+   * carries it here already, so this never overwrites one.
    */
-  | { readonly type: 'green'; readonly disposition: TourDisposition }
+  | { readonly type: 'green' }
+  /**
+   * The usage ceiling fired at a job boundary, so this tour closes carried
+   * (§3.2, FR-1.4, D-66, D-101).
+   *
+   * It stays in EXECUTING and moves nothing but the disposition. The §3.2
+   * table has no row for it because the table is about states and this changes
+   * none; what it changes is the answer closure will read, and D-101 puts that
+   * write at the transition that decides it rather than two states later.
+   * Without it the fact lived only in this process until `CLOSING`, so a death
+   * in `VERIFYING` closed the tour as an ordinary one.
+   */
+  | { readonly type: 'carry' }
   /** VERIFYING to FAILED: a command failed; the output feeds the retry. */
   | { readonly type: 'verification-failed' }
   /** FAILED to EXECUTING while attempt_count is under the budget (FR-1.3). */
@@ -126,16 +135,6 @@ export type TourEvent =
       readonly type: 'decide';
       readonly gateClass: GateClass;
       readonly approved: boolean;
-      /**
-       * The disposition to re-enter `CLOSING` under, for a gate raised from
-       * `CLOSING` and approved or rejected (§4.6 step 3, D-75, D-79).
-       *
-       * Required on that one route and refused on every other, because a
-       * decision returning to CLOSING is an entry into CLOSING and the marker
-       * carries a disposition there (§3.3, D-92). A tour-budget rejection does
-       * not use it: that route knows its own answer, and it is `abandoned`.
-       */
-      readonly disposition?: TourDisposition;
     }
   /** CLOSING to IDLE: log written, debts settled, open-tour block cleared. */
   | { readonly type: 'close' };
@@ -183,7 +182,7 @@ export interface Transition {
 const ACCEPTS: Record<TourState, readonly TourEventType[]> = {
   IDLE: ['open', 'raise-gate'],
   PLANNING: ['plan-complete', 'plan-failed', 'raise-gate'],
-  EXECUTING: ['job-boundary', 'jobs-done', 'raise-gate'],
+  EXECUTING: ['job-boundary', 'carry', 'jobs-done', 'raise-gate'],
   VERIFYING: ['green', 'verification-failed', 'raise-gate'],
   CLOSING: ['close', 'raise-gate'],
   // A decision or a park and nothing else: the orchestrator blocks on the
@@ -376,40 +375,9 @@ function decide(
   // (§3.2). The uncommitted diff, where there is one, travels with the gate
   // (D-24).
   //
-  // Returning to CLOSING is an entry into CLOSING, so it carries a
-  // disposition (§3.3, D-92). It is asked for rather than defaulted for the
-  // same reason `green` asks: a default here would record an abandoned or
-  // carried tour as an ordinary one in the permanent log.
-  if (interrupted !== 'CLOSING' && event.disposition !== undefined) {
-    // Refused rather than ignored. Every other state carries no disposition
-    // (§3.3, D-92), so a decision offering one here has been built against a
-    // route that does not exist, and the invariant below would have dropped it
-    // without a word: a caller would be told its answer was taken.
-    throw new IllegalTransitionError(
-      marker.state,
-      'decide',
-      `only a decision returning to CLOSING carries a disposition, and this one returns to ${interrupted} (SDD §3.3, D-92)`,
-    );
-  }
-
-  if (interrupted === 'CLOSING') {
-    if (event.disposition === undefined) {
-      throw new IllegalTransitionError(
-        marker.state,
-        'decide',
-        'a decision returning to CLOSING is an entry into CLOSING, which carries the disposition it is closing under (SDD §3.3, D-92)',
-      );
-    }
-    return {
-      marker: stamped(marker, now, {
-        state: interrupted,
-        interruptedState: null,
-        disposition: event.disposition,
-      }),
-      abandoned: false,
-      exits: false,
-    };
-  }
+  // The disposition needs nothing here since D-101: a gate raised from
+  // CLOSING carries it through GATED, so returning to CLOSING finds it still
+  // on the marker rather than having to be handed it back.
 
   return {
     marker: stamped(marker, now, { state: interrupted, interruptedState: null }),
@@ -434,19 +402,16 @@ function withGateRule(marker: StateMarker): StateMarker {
 }
 
 /**
- * D-92's invariant, applied the same way and in the same place as D-62's.
+ * D-101's invariant: the disposition is cleared when the cycle reaches `IDLE`
+ * and carried everywhere else.
  *
- * A disposition is a verdict about a closure, so it belongs to the state that
- * is closing and to no other. Left standing across a transition out of
- * `CLOSING`, it would be waiting on the next entry into `CLOSING` with an
- * answer nothing had decided this time round, which is the same class of
- * defect as a stale `gate_id`: a record pointing at something that is over.
- *
- * A gate raised from `CLOSING` therefore drops it, and the decision that
- * returns carries it again (see {@link decide}).
+ * The opposite of the rule this replaces, which cleared it outside `CLOSING`
+ * and so dropped a verdict decided in `EXECUTING` or at a gate. What must not
+ * survive is a verdict about a tour that is over: the next tour would find its
+ * disposition already answered by the last one.
  */
 function withDispositionRule(marker: StateMarker): StateMarker {
-  if (DISPOSITION_BEARING_STATES.includes(marker.state)) return marker;
+  if (marker.state !== DISPOSITION_CLEARED_AT) return marker;
   return marker.disposition === null ? marker : { ...marker, disposition: null };
 }
 
@@ -507,7 +472,12 @@ export function transition(
     case 'jobs-done':
       return move({ state: 'VERIFYING' });
     case 'green':
-      return move({ state: 'CLOSING', disposition: event.disposition });
+      // Never overwrites: a carried tour decided its own at the boundary the
+      // ceiling fired (D-66, D-101), and `closed` is what is left when nothing
+      // else decided.
+      return move({ state: 'CLOSING', disposition: marker.disposition ?? 'closed' });
+    case 'carry':
+      return move({ disposition: 'carried' });
     case 'verification-failed':
       // §4.3: capture the failure, increment attempt_count, go to FAILED.
       return move({ state: 'FAILED', attemptCount: marker.attemptCount + 1 });

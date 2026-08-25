@@ -126,12 +126,7 @@ describe('the writer walks a script it did not produce', () => {
     const count = markerWrites();
 
     expect(() =>
-      advance(
-        root,
-        START,
-        { type: 'green', disposition: 'closed' },
-        { attemptBudget: script.attemptBudget },
-      ),
+      advance(root, START, { type: 'green' }, { attemptBudget: script.attemptBudget }),
     ).toThrowError(IllegalTransitionError);
     expect(readMarker(root)).toEqual(before);
     expect(markerWrites()).toBe(count);

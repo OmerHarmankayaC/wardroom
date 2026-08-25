@@ -48,14 +48,15 @@ export const TOUR_DISPOSITIONS = ['closed', 'abandoned', 'carried'] as const;
 export type TourDisposition = (typeof TOUR_DISPOSITIONS)[number];
 
 /**
- * The one state that carries a disposition (SDD §3.3, D-92).
+ * The state a disposition is cleared at (SDD §3.3, D-101).
  *
- * A list of one, written as a list because `gate_id` above is the same rule
- * over two states and the two invariants are checked by the same code below. A
- * second state joining it would then arrive with its check already written,
- * which is the half that was forgotten last time.
+ * The field's rule is a lifetime and not a state test, which is what D-101
+ * corrected: it is written at the transition that decides it, carried through
+ * every state after that, and cleared when the cycle reaches `IDLE`. Written
+ * as a rule about one state because that is the only state where the field's
+ * value is fixed; everywhere else it depends on what has been decided.
  */
-export const DISPOSITION_BEARING_STATES: readonly TourState[] = ['CLOSING'];
+export const DISPOSITION_CLEARED_AT: TourState = 'IDLE';
 
 export interface StateMarker {
   readonly state: TourState;
@@ -76,17 +77,23 @@ export interface StateMarker {
    */
   readonly gateId: string | null;
   /**
-   * Which of the three closures this is (SDD §3.3, D-92). Set on entry into
-   * `CLOSING` and null in every other state.
+   * Which of the three closures this is (SDD §3.3, D-92 corrected by D-101).
    *
-   * The state that decides the disposition writes it, which is also the
-   * transition that knows it. Until this field existed only one of the three
-   * was recoverable after a death: an abandoned tour carried its disposition
-   * on the rejected tour-budget entry, and D-62 clears `gate_id` the moment
-   * that decision is applied, so by the time closure ran there was no key left
-   * to find the entry with. The tour would have closed as `closed` and the
-   * tour log, which is the permanent record, would have said so. A carried
-   * tour (D-66) had the same hole one route over.
+   * Written at the transition that decides it, carried through every state
+   * after that, and null until something decides it and again from `IDLE`.
+   * Carried is decided at the `EXECUTING` job boundary where the ceiling fires
+   * (D-66), abandoned at the tour-budget rejection that routes to closure
+   * (D-35), and closed on entry into `CLOSING`, which is where that one is
+   * genuinely decided.
+   *
+   * The field was first written as set on entry into `CLOSING` and null
+   * everywhere else, which recorded each disposition one state after it was
+   * decided and left two windows open. A carried tour that died in `VERIFYING`
+   * lost the fact entirely and closed as `closed`, which is the very failure
+   * D-92 was written to prevent; and a `scope-change` gate raised from
+   * `CLOSING` (§4.6 step 3) moved the marker to `GATED`, where "null outside
+   * `CLOSING`" dropped a disposition already decided. The rule was a state
+   * test where it should have been a lifetime.
    */
   readonly disposition: TourDisposition | null;
   readonly headCommit: string | null;
@@ -199,17 +206,16 @@ function schemaProblem(raw: unknown): string | null {
     return `gate_id is null outside ${GATE_BEARING_STATES.join(' and ')}, and ${record.state} carries ${JSON.stringify(record.gate_id)} (SDD §3.3, D-62)`;
   }
 
-  // D-92, both directions, for the same reason D-62 is checked both ways. A
-  // CLOSING marker with no disposition sends closure back to deriving one,
-  // which is what left two of the three unrecoverable; a disposition on any
-  // other state is a closure verdict recorded before the closure, and the next
-  // entry into CLOSING would find it already answered.
-  const closing = DISPOSITION_BEARING_STATES.includes(record.state);
-  if (closing && record.disposition === null) {
-    return `${record.state} must carry the disposition it is closing under, one of ${TOUR_DISPOSITIONS.join(', ')} (SDD §3.3, D-92)`;
+  // D-101, the two ends of the field's lifetime. A closure that reaches
+  // CLOSING with no disposition would send closure back to deriving one, which
+  // is what left two of the three unrecoverable; a disposition surviving into
+  // IDLE would be a verdict about a tour that is over, waiting for the next
+  // tour to find it already answered.
+  if (record.state === 'CLOSING' && record.disposition === null) {
+    return `${record.state} must carry the disposition it is closing under, one of ${TOUR_DISPOSITIONS.join(', ')} (SDD §3.3, D-92, D-101)`;
   }
-  if (!closing && record.disposition !== null) {
-    return `disposition is null outside ${DISPOSITION_BEARING_STATES.join(' and ')}, and ${record.state} carries ${JSON.stringify(record.disposition)} (SDD §3.3, D-92)`;
+  if (record.state === DISPOSITION_CLEARED_AT && record.disposition !== null) {
+    return `disposition is cleared at ${DISPOSITION_CLEARED_AT}, and this marker carries ${JSON.stringify(record.disposition)} (SDD §3.3, D-101)`;
   }
   return null;
 }

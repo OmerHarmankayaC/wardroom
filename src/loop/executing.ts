@@ -242,6 +242,11 @@ export async function driveExecuting(input: DriveExecutingInput): Promise<DriveR
     // that carried would hand a successor an empty list to plan from.
     if (ceiling.kind === 'reached' && index + 1 < block.jobs.length) {
       carried = true;
+      // Written here, at the boundary that decided it, and not two states
+      // later (D-101). The fact used to live only in this process until
+      // `CLOSING`, so a death in `VERIFYING` closed a carried tour as an
+      // ordinary one, which is the failure D-92 was written to prevent.
+      marker = advance(input.root, marker, { type: 'carry' }, rules, now()).marker;
       break;
     }
 

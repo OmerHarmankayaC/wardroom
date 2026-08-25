@@ -7,7 +7,7 @@ import {
   writeLastFailure,
 } from '../state/last-failure.js';
 import { advance } from '../state/machine.js';
-import type { StateMarker, TourDisposition } from '../state/marker.js';
+import type { StateMarker } from '../state/marker.js';
 import { type VerifyRunner, runVerification } from '../verify/run.js';
 import { assertDrivenState } from './state-guard.js';
 
@@ -29,16 +29,6 @@ export interface DriveVerifyingInput {
   readonly config: ProjectConfig;
   /** The marker as resumption left it. Must read `VERIFYING`. */
   readonly marker: StateMarker;
-  /**
-   * The disposition the closure this verification opens is to record (D-92).
-   *
-   * `EXECUTING` decided it and `CLOSING` reads it; `VERIFYING` sits between
-   * them and carries it across, because the transition into `CLOSING` happens
-   * here and the marker carries a disposition there (§3.3). Required rather
-   * than defaulted to `closed`: a default would file a carried tour (D-66) as
-   * an ordinary one in the permanent log, which is the failure D-92 closed.
-   */
-  readonly disposition: TourDisposition;
   /** Injected so a suite need not be spent proving the state machine moves. */
   readonly runVerification?: VerifyRunner;
   readonly now?: () => Date;
@@ -70,13 +60,7 @@ export function driveVerifying(input: DriveVerifyingInput): VerifyingResult {
   if (result.kind === 'green') {
     return {
       kind: 'green',
-      marker: advance(
-        input.root,
-        input.marker,
-        { type: 'green', disposition: input.disposition },
-        rules,
-        now,
-      ).marker,
+      marker: advance(input.root, input.marker, { type: 'green' }, rules, now).marker,
     };
   }
 

@@ -9,6 +9,7 @@ import { type DriverSessionFactory, fixedSessions } from '../../src/loop/driver-
 import { runCycle } from '../../src/loop/run.js';
 import type { ScopedSession } from '../../src/loop/wiring.js';
 import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
+import { advance } from '../../src/state/machine.js';
 import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
 import { writeReport } from '../../src/state/report.js';
 
@@ -738,5 +739,80 @@ describe('a run that cannot establish a state reports both readings', () => {
 
     expect(outcome.kind).toBe('stopped');
     expect(outcome.reason).toContain('head_commit');
+  });
+});
+
+/**
+ * The disposition survives the states between the decision and the closure
+ * (SDD §3.3, D-101).
+ *
+ * The rule this replaces wrote it on entry into `CLOSING`, one state after
+ * each of the two decisions that are not made there, which left two windows: a
+ * carried tour that died in `VERIFYING` reached closure as `closed`, and a
+ * gate raised from `CLOSING` dropped a verdict already decided.
+ */
+describe('a disposition decided before CLOSING reaches CLOSING', () => {
+  it('closes a tour carried where the run died in VERIFYING after the ceiling fired', async () => {
+    // The marker as the boundary that decided it left it, and the death right
+    // after: nothing else on disk says the ceiling fired.
+    given({ state: 'VERIFYING', tourId: TOUR, jobIndex: 3, disposition: 'carried' });
+    const doubles = sessions();
+
+    const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+    expect(outcome.kind).toBe('idle');
+    expect(outcome.disposition).toBe('carried');
+  });
+
+  it('records closed where nothing decided otherwise, without overwriting one that did', async () => {
+    given({ state: 'VERIFYING', tourId: TOUR, jobIndex: 3 });
+
+    const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
+
+    expect(outcome.disposition).toBe('closed');
+  });
+
+  it('carries the disposition through a scope-change gate raised from CLOSING', async () => {
+    // A debt the PM cannot settle without a scope decision raises the gate
+    // from CLOSING (§4.6 step 3, D-75). The marker moves to GATED and back,
+    // and the verdict has to be the same on both sides of it.
+    writeReport(root, {
+      tourId: TOUR,
+      commits: [],
+      pushed: false,
+      jobs: [],
+      deviations: [],
+      debts: [
+        {
+          document: 'SRS.md',
+          section: '4',
+          problem: 'the requirement and the design disagree',
+          settleable: false,
+        },
+      ],
+      auditFindings: [],
+      notes: 'none',
+    });
+    given({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition: 'carried' });
+
+    const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
+
+    expect(outcome.kind).toBe('gated');
+    const gated = readMarker(root);
+    expect(gated.kind === 'ok' && gated.marker.state).toBe('GATED');
+    expect(gated.kind === 'ok' && gated.marker.disposition).toBe('carried');
+
+    // And it is still there when the owner's answer moves the marker back.
+    decideGate(root, outcome.gateId ?? '', 'rejected', 'owner');
+    const applied = advance(
+      root,
+      gated.kind === 'ok' ? gated.marker : marker({}),
+      { type: 'decide', gateClass: 'scope-change', approved: false },
+      { attemptBudget: 3 },
+      NOW(),
+    );
+
+    expect(applied.marker.state).toBe('CLOSING');
+    expect(applied.marker.disposition).toBe('carried');
   });
 });
