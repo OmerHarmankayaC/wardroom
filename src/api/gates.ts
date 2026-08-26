@@ -1,5 +1,6 @@
-import { list, show } from '../gates/queue.js';
-import { decide } from '../gates/queue.js';
+import { loadConfig } from '../config/load.js';
+import { parkElapsedGate } from '../gates/parking.js';
+import { decide, list, show } from '../gates/queue.js';
 import type { GateEntry } from '../gates/schema.js';
 
 /**
@@ -22,9 +23,27 @@ import type { GateEntry } from '../gates/schema.js';
 /** Who a decision is recorded as, where a surface names nobody (FR-3.2). */
 export const DEFAULT_DECIDER = 'owner';
 
-/** Pending and parked gates, oldest first (FR-3.1, FR-3.3). */
-export function gateList(root: string, options: { readonly includeResolved?: boolean } = {}) {
-  return list(root, options);
+export interface GateListOptions {
+  readonly includeResolved?: boolean;
+  /** The moment being read at, for the parking computation (D-107). */
+  readonly now?: Date;
+}
+
+/**
+ * Pending and parked gates, oldest first (FR-3.1, FR-3.3).
+ *
+ * Reading is what parks a tour whose waiting period has run out (D-107), so
+ * this asks the same question `status` and `run` ask, through the same
+ * function. A listing that showed a gate as merely pending because nothing
+ * happened to be alive when its wait elapsed would be the exact failure
+ * `PARKED` exists to prevent.
+ */
+export function gateList(root: string, options: GateListOptions = {}): GateEntry[] {
+  parkElapsedGate(root, loadConfig(root), options.now === undefined ? {} : { now: options.now });
+  return list(
+    root,
+    options.includeResolved === undefined ? {} : { includeResolved: options.includeResolved },
+  );
 }
 
 /** One gate with its full class preview (§3.1), resolved or not (D-29). */

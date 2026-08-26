@@ -1,5 +1,6 @@
 import { loadConfig } from '../config/load.js';
 import type { ProjectConfig } from '../config/schema.js';
+import { parkElapsedGate } from '../gates/parking.js';
 import { list } from '../gates/queue.js';
 import type { GateEntry } from '../gates/schema.js';
 import { type CeilingVerdict, ceilingAgainst } from '../loop/ceiling.js';
@@ -64,9 +65,22 @@ function currentJobOf(marker: MarkerRead, openTour: OpenTourRead): CurrentJob | 
   return { index, job };
 }
 
+export interface StatusOptions {
+  /** The moment being read at, for the parking computation (D-107). */
+  readonly now?: Date;
+}
+
 /** State, open tour, current job, gates and usage against budget (§5.1). */
-export function projectStatus(root: string): ProjectStatus {
+export function projectStatus(root: string, options: StatusOptions = {}): ProjectStatus {
   const config = loadConfig(root);
+
+  // Parked is computed on reading, not stamped by a timer (D-107). `run` may
+  // have exited hours ago and there is no daemon, so a gate whose waiting
+  // period ran out overnight is parked by whoever reads it next. This is one
+  // of the three readers that does, and all three call the same function so
+  // that they cannot answer differently.
+  parkElapsedGate(root, config, options.now === undefined ? {} : { now: options.now });
+
   const marker = readMarker(root);
   const openTour = readOpenTour(root, config.docRoot);
   const tourId = marker.kind === 'ok' ? marker.marker.tourId : null;

@@ -9,6 +9,7 @@ import type { ProjectConfig } from '../../src/config/schema.js';
 import { readAuditLines } from '../../src/gates/audit.js';
 import type { ToolCallClassification } from '../../src/gates/classify.js';
 import type { ParkedNotification } from '../../src/gates/notify.js';
+import { parkingDeadline } from '../../src/gates/parking.js';
 import { decide, list } from '../../src/gates/queue.js';
 import type { GateEntry, GatePreview } from '../../src/gates/schema.js';
 import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
@@ -16,7 +17,6 @@ import {
   createGateInterceptor,
   decisionOutcome,
   isErrorOutcome,
-  parkingDeadline,
 } from '../../src/roles/intercept.js';
 import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
 

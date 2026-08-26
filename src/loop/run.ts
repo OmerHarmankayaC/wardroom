@@ -2,6 +2,7 @@ import { type ClosureOccasion, WIP_SUBJECT_PREFIX } from '../commit/gate.js';
 import { loadConfig } from '../config/load.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { dirtyTreeGateRequest } from '../gates/dirty-tree.js';
+import { parkElapsedGate } from '../gates/parking.js';
 import { enqueue } from '../gates/queue.js';
 import { readEntry } from '../gates/store.js';
 import { type TreeChange, workingTreeChanges } from '../state/git.js';
@@ -173,6 +174,14 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
   const now = input.now ?? (() => new Date());
   const rules = { attemptBudget: config.attemptBudget };
   const visited: TourState[] = [];
+
+  // Parked is computed on reading (D-107), and a run starting is a reading.
+  // Without this, a gate raised and left overnight with the terminal closed
+  // would still read as `GATED` the next morning: the run would report the
+  // orchestrator blocked on a wait that ran out hours ago, which is exactly
+  // the case `PARKED` exists for. Before resumption, so §4.4 sees the state
+  // the entry actually implies.
+  parkElapsedGate(root, config, { now: now() });
 
   // Resumption first, always. The marker is a hint and §4.4 is what turns it
   // into a state, so a cycle that read the marker directly would be a second

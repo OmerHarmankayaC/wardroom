@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import { decide as decideGate, enqueue } from '../../src/gates/queue.js';
+import { readEntry } from '../../src/gates/store.js';
 import { type DriverSessionFactory, fixedSessions } from '../../src/loop/driver-sessions.js';
 import { runCycle } from '../../src/loop/run.js';
 import type { ScopedSession } from '../../src/loop/wiring.js';
@@ -419,6 +420,93 @@ describe('the exits §3.2 defines', () => {
     expect(outcome.kind).toBe('gated');
     expect(doubles.ran).toEqual([]);
     expect(readMarker(root)).toMatchObject({ kind: 'ok', marker: { state: 'GATED' } });
+  });
+
+  it('parks a gate whose wait ran out while nothing was running (D-107)', async () => {
+    // The case the state exists for: the gate was raised, the run exited, and
+    // the waiting period ran out overnight with no process alive to notice.
+    // Without a reading that computes it, this run would report the
+    // orchestrator blocked on a wait that ended hours ago.
+    const entry = enqueue(
+      root,
+      {
+        gateClass: 'push',
+        tourId: TOUR,
+        jobIndex: 1,
+        interruptedState: 'EXECUTING',
+        what: 'Push 2 commits to origin/main',
+        why: 'a push leaves the machine (TD-2)',
+        preview: {
+          kind: 'push',
+          commits: [{ hash: 'abc1234', subject: 'feat: one' }],
+          remote: 'origin',
+          branch: 'main',
+        },
+      },
+      { now: new Date('2026-08-21T10:00:00.000Z') },
+    );
+    given({
+      state: 'GATED',
+      tourId: TOUR,
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: entry.gateId,
+    });
+    const doubles = sessions();
+
+    // `gate_wait` is 24h in this fixture, so a day and an hour later.
+    const outcome = await runCycle({
+      root,
+      sessions: doubles.sessions,
+      now: () => new Date('2026-08-22T11:00:00.000Z'),
+    });
+
+    expect(outcome.kind).toBe('parked');
+    expect(doubles.ran).toEqual([]);
+    expect(readMarker(root)).toMatchObject({ kind: 'ok', marker: { state: 'PARKED' } });
+    // The gate is still pending and still the owner's to answer: parking
+    // releases the orchestrator, it never decides (D-27).
+    expect(readEntry(root, entry.gateId)?.status).toBe('pending');
+    expect(readEntry(root, entry.gateId)?.parkedAt).not.toBeNull();
+  });
+
+  it('leaves a gate inside its waiting period gated', async () => {
+    // The discriminating case for the one above: a run that parked everything
+    // it found would pass that one and be wrong here.
+    const entry = enqueue(
+      root,
+      {
+        gateClass: 'push',
+        tourId: TOUR,
+        jobIndex: 1,
+        interruptedState: 'EXECUTING',
+        what: 'Push 2 commits to origin/main',
+        why: 'a push leaves the machine (TD-2)',
+        preview: {
+          kind: 'push',
+          commits: [{ hash: 'abc1234', subject: 'feat: one' }],
+          remote: 'origin',
+          branch: 'main',
+        },
+      },
+      { now: new Date('2026-08-21T10:00:00.000Z') },
+    );
+    given({
+      state: 'GATED',
+      tourId: TOUR,
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: entry.gateId,
+    });
+
+    const outcome = await runCycle({
+      root,
+      sessions: sessions().sessions,
+      now: () => new Date('2026-08-22T09:00:00.000Z'),
+    });
+
+    expect(outcome.kind).toBe('gated');
+    expect(readEntry(root, entry.gateId)?.parkedAt).toBeNull();
   });
 
   it('returns from PARKED with a non-error status', async () => {

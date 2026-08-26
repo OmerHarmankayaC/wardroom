@@ -203,7 +203,14 @@ export {
   deliver,
   parkedNotification,
 } from './gates/notify.js';
-export { type InterceptionOutcome, isErrorOutcome, parkingDeadline } from './roles/intercept.js';
+export { type InterceptionOutcome, isErrorOutcome } from './roles/intercept.js';
+export {
+  type ParkOnRead,
+  type ParkOnReadOptions,
+  hasElapsed,
+  parkElapsedGate,
+  parkingDeadline,
+} from './gates/parking.js';
 export { formatDuration } from './config/duration.js';
 export { GATE_BEARING_STATES } from './state/marker.js';
 export { RUN_DIR_NAME, WARDROOM_DIR_NAME } from './config/paths.js';
@@ -355,8 +362,20 @@ export {
   projectRun,
 } from './api/project.js';
 export { clearStopRequest, requestStop, stopRequested } from './state/stop-request.js';
-export { type CurrentJob, type ProjectStatus, projectStatus } from './api/status.js';
-export { DEFAULT_DECIDER, type DecideInput, gateDecide, gateList, gateShow } from './api/gates.js';
+export {
+  type CurrentJob,
+  type ProjectStatus,
+  type StatusOptions,
+  projectStatus,
+} from './api/status.js';
+export {
+  DEFAULT_DECIDER,
+  type DecideInput,
+  type GateListOptions,
+  gateDecide,
+  gateList,
+  gateShow,
+} from './api/gates.js';
 export {
   type UsageBucket,
   type UsageReport,

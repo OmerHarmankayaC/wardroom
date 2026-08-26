@@ -5,7 +5,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { checkCommit } from '../commit/gate.js';
 import { deriveCommitOccasion } from '../commit/occasion.js';
-import { type Duration, formatDuration } from '../config/duration.js';
+import { formatDuration } from '../config/duration.js';
 import { ensureRunDir } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
 import {
@@ -15,6 +15,7 @@ import {
   isCommitCall,
 } from '../gates/classify.js';
 import { type Notifier, deliver, parkedNotification } from '../gates/notify.js';
+import { hasElapsed } from '../gates/parking.js';
 import { authorizationFor, consume, enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
 import { checkProgressWrite } from '../progress/write-check.js';
@@ -155,18 +156,6 @@ export function decisionOutcome(entry: GateEntry): SyncHookJSONOutput {
   };
 }
 
-/**
- * When a pending gate's waiting period runs out (FR-3.3).
- *
- * Measured from `requested_at` on the entry, which is the record, rather than
- * from when this process started waiting. A run that died and came back would
- * otherwise hand the same gate a fresh waiting period every restart, and a gate
- * that restarts often enough never parks at all.
- */
-export function parkingDeadline(entry: GateEntry, gateWait: Duration): number {
-  return new Date(entry.requestedAt).getTime() + gateWait.milliseconds;
-}
-
 /** Nothing to decide: the call is not gate-classified and is not touched. */
 const UNTOUCHED: SyncHookJSONOutput = {};
 
@@ -267,9 +256,10 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
       // share (SDD §5.1, D-29).
       const entry = show(input.root, gateId);
       if (entry.status !== 'pending') return { decided: entry };
-      if (now().getTime() >= parkingDeadline(entry, input.config.gateWait)) {
-        return { elapsed: true };
-      }
+      // The same computation every other reader makes (../gates/parking.ts,
+      // D-107). This path is the one that happens to have an audience: the run
+      // is attached, so it parks the tour itself and prints before exiting.
+      if (hasElapsed(entry, input.config.gateWait, now())) return { elapsed: true };
       await sleep(pollIntervalMs);
     }
   }
