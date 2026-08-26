@@ -87,7 +87,9 @@ export interface ParkOnReadOptions {
  * the order the attached path already uses: the entry is stamped first,
  * because it is the record and the audit line goes with it, and the marker
  * follows, so a reader that died here leaves an entry stamped and a marker a
- * later reader will move.
+ * later reader will move. Moving it is what the later reader does: it does not
+ * stamp the entry a second time, which the queue refuses, and a refusal here
+ * would leave every read of the project throwing rather than recovering.
  *
  * Only from `GATED`, and only for the gate the marker names (D-62). A pending
  * elapsed entry the marker is not waiting on belongs to no tour this could
@@ -147,7 +149,13 @@ export function parkElapsedGate(
     };
   }
 
-  const parked = park(root, entry.gateId, { now });
+  // Already stamped means a reader got this far and did not finish: the entry
+  // is the record and the stamp is the moment the wait actually elapsed, so it
+  // is left alone and only the marker is moved. Asking the queue to stamp it
+  // again is refused (../gates/queue.ts), and refusing here would make every
+  // read of this project throw from then on, which is worse than the crash it
+  // was recovering from.
+  const parked = entry.parkedAt === null ? park(root, entry.gateId, { now }) : entry;
   // Through the machine, not built by hand. A literal here would write a shape
   // the transition table never produced, and parking from a state that had
   // never gated would go to disk without complaint. Parking decides nothing,

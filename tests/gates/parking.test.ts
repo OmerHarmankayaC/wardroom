@@ -155,6 +155,28 @@ describe('the first reader parks it, with nothing alive in between', () => {
     expect(entryOnDisk().parked_at).toBe(ELAPSED.toISOString());
   });
 
+  it('moves a marker left behind by a reader that died between the two writes', () => {
+    // The order is entry first, marker second, so that a reader dying between
+    // them leaves an entry stamped and a marker a later reader will move. It
+    // did not: the later reader asked the queue to stamp an entry already
+    // stamped, the queue refused it, and every command that reads this project
+    // threw from then on. Found by the whole-tour audit.
+    writeGateEntry(
+      root,
+      gateEntry({ requested_at: REQUESTED_AT, parked_at: ELAPSED.toISOString() }),
+    );
+
+    const outcome = parkElapsedGate(root, loadConfig(root), {
+      now: new Date('2026-08-23T09:30:00.000Z'),
+    });
+
+    expect(outcome.kind).toBe('parked');
+    expect(markerOnDisk().state).toBe('PARKED');
+    // The stamp stays where the first reader put it: a second one would move
+    // the record of when the wait actually elapsed.
+    expect(entryOnDisk().parked_at).toBe(ELAPSED.toISOString());
+  });
+
   it('says nothing about a marker it cannot read, rather than parking on a guess', () => {
     writeFileSync(wardroomPaths(root).stateFile, '{ truncated');
 
