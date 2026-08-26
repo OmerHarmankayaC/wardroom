@@ -9,7 +9,7 @@ import { commitExists, headCommit, isAncestorOf, remoteCarries } from '../state/
 import { clearLastFailure } from '../state/last-failure.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker, TourDisposition } from '../state/marker.js';
-import { type ClosingReport, type ReportedDebt, readReport } from '../state/report.js';
+import { type ClosingReport, type ReportedDebt, readReportFile } from '../state/report.js';
 import { assertDrivenState } from './state-guard.js';
 import { appendPending, tourLogPath } from './tour-log.js';
 
@@ -150,21 +150,31 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
 
   // Step 1. The report is read from disk, never taken from a session: §4.4's
   // CLOSING branch has to survive a death, and a report that lives only in a
-  // transcript is gone the moment the process is (D-73).
-  const report = readReport(input.root, tourId);
-  if (report === null) {
+  // transcript is gone the moment the process is (D-73). Three cases, because
+  // closure acts differently on each.
+  const file = readReportFile(input.root, tourId);
+  if (file.kind === 'aborted') {
     throw new Error(
-      `${tourId} left no report under run/reports, and closure reads one rather than asking a session what happened (SDD §3.0, §4.6 step 1, D-73). Its tour log would have gone to ${tourLogPath(input.root, input.config, tourId)}.`,
+      `${tourId} left an aborted record rather than a report, so the session did not finish and CLOSING is not the state that should have been reached (SDD §4.6 step 1, D-88). Closure says so rather than closing a tour whose work is unknown. Its tour log would have gone to ${tourLogPath(input.root, input.config, tourId)}.`,
     );
   }
 
-  // Step 2. Checked, not adopted.
-  const claimCheck = checkClaims(input.root, input.config, report);
+  // A report that never arrived is the third case (D-98). The orchestrator
+  // writes it when the session's generator completes (A.4), so a death in that
+  // window leaves every acceptance criterion passing and no file at all, which
+  // is neither a report nor an aborted record. Closure continues from the
+  // block and `.git`, which is what step 2 checks against in any case.
+  const report = file.kind === 'report' ? file.report : null;
+
+  // Step 2. Checked, not adopted. A lost report claimed nothing, so there is
+  // nothing to check and nothing is invented to check.
+  const claimCheck =
+    report === null ? { commits: [], push: null } : checkClaims(input.root, input.config, report);
 
   // Step 3. Settle what can be settled; a debt needing a scope decision is the
   // owner's (D-75), and CLOSING cannot reach IDLE with one open (§3.2).
   const declined: ReportedDebt[] = [];
-  for (const debt of report.debts) {
+  for (const debt of report?.debts ?? []) {
     if (debt.settleable) {
       await input.session.settleDebt(debt);
       continue;
@@ -295,7 +305,7 @@ function raiseScopeChange(
 /** The tour log's body (§4.6 step 4): what a later reader has instead of the block. */
 function renderTourLog(
   tourId: string,
-  report: ClosingReport,
+  report: ClosingReport | null,
   claimCheck: ClaimCheck,
   disposition: TourDisposition,
   block: OpenTourBlock | null,
@@ -313,15 +323,22 @@ function renderTourLog(
     `- **Goal:** ${block?.goal ?? 'not recorded'}`,
     `- **Based on:** ${block?.basedOn ?? 'not recorded'}`,
     '',
+    ...(report === null ? lostReportSection() : []),
     '## Jobs',
     '',
-    ...(report.jobs.length === 0
-      ? ['None reported.']
-      : report.jobs.map((job, index) => `${index + 1}. ${job.title}: ${job.verdict}`)),
+    ...(report === null
+      ? ['Not reported: the report was lost. The block below is what the tour left.']
+      : report.jobs.length === 0
+        ? ['None reported.']
+        : report.jobs.map((job, index) => `${index + 1}. ${job.title}: ${job.verdict}`)),
     '',
     '## Commits claimed',
     '',
-    report.commits.length === 0 ? 'None.' : report.commits.join(', '),
+    report === null
+      ? 'Nothing was claimed, because there was no report to claim it.'
+      : report.commits.length === 0
+        ? 'None.'
+        : report.commits.join(', '),
     '',
     '## Where the report and the repository disagreed',
     '',
@@ -351,7 +368,30 @@ function renderTourLog(
     '',
     '## Notes',
     '',
-    report.notes === '' ? 'None.' : report.notes,
+    report === null ? 'None: the report was lost.' : report.notes === '' ? 'None.' : report.notes,
     '',
   ].join('\n');
+}
+
+/**
+ * What the log says where the report never arrived (§4.6 step 1, D-98).
+ *
+ * The debts are named unrecoverable rather than reported as none. A debt
+ * nobody wrote down is the failure this whole procedure exists to prevent, and
+ * pretending there were none would be the same failure with better manners.
+ */
+function lostReportSection(): string[] {
+  return [
+    '## The report was lost',
+    '',
+    'The session ended and the report was not written: a death between the',
+    'generator completing and the write leaves every acceptance criterion',
+    'passing and no file at all (SDD §4.6 step 1, D-98). Its contents are not',
+    'reconstructed here.',
+    '',
+    '**The document debts it would have carried are unrecoverable.** They are',
+    'named as unrecoverable rather than assumed absent: nothing here observed',
+    'that there were none, only that nobody wrote them down.',
+    '',
+  ];
 }

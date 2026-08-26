@@ -1,0 +1,48 @@
+{
+  "note": "The write-window table of SDD 4.4, transcribed by hand from the document and never generated from the code. D-97 puts the table in the document so that the kill test enumerates it rather than inventing its own list; this file is that enumeration, and the test below refuses to run unless every row in it has a case. The design document is untracked in this repository (D-8), so nothing here can read it: what this file can promise is that no window is dropped from the list once it is written down, and that is said out loud rather than implied.",
+  "source": "SDD 4.4, the windows a death can land in (D-97), as of SDD 1.19",
+  "windows": [
+    {
+      "id": "status-written-commit-not-made",
+      "window": "Status update written, commit not made",
+      "cites": "SDD 4.2, D-65",
+      "answer": "The criterion is the evidence and the recorded status is not: the job is re-checked and, where it passes, its commit is made at that boundary"
+    },
+    {
+      "id": "commit-made-marker-not-written",
+      "window": "Commit made, marker not written",
+      "cites": "SDD 4.2, D-47, D-100",
+      "answer": "head_commit is behind HEAD; the commit is the fact, the marker is reconstructed from it, provided the marker's commit is reachable"
+    },
+    {
+      "id": "disposition-decided-marker-not-carrying-it",
+      "window": "Disposition decided, marker not yet carrying it",
+      "cites": "SDD 3.3, D-101",
+      "answer": "The disposition is written at the transition that decided it, so this window closes rather than being answered: a carried tour that died in VERIFYING used to reach closure as closed"
+    },
+    {
+      "id": "session-ended-report-not-written",
+      "window": "Session ended, report not written",
+      "cites": "SDD 4.6, D-98",
+      "answer": "All criteria pass and no report exists: the report is recorded as lost and closure continues from the block and .git"
+    },
+    {
+      "id": "gate-decided-authorization-not-consumed",
+      "window": "Gate decided, authorization not consumed",
+      "cites": "SDD 3.2, D-61",
+      "answer": "The entry still authorizes exactly one matching call; the authorization lapses at IDLE"
+    },
+    {
+      "id": "closure-commit-made-baseline-not-refreshed",
+      "window": "Closure commit made, baseline not refreshed",
+      "cites": "SDD 4.6, D-77",
+      "answer": "The next tour compares against the older baseline, which is stricter rather than looser"
+    },
+    {
+      "id": "block-cleared-closure-commit-not-made",
+      "window": "Block cleared, closure commit not made",
+      "cites": "SDD 4.6",
+      "answer": "The cleared block is uncommitted in the tree; the tour log is the record, and the next closure commit carries it"
+    }
+  ]
+}

@@ -96,6 +96,17 @@ export function reportPath(root: string, tourId: string): string {
   return join(wardroomPaths(root).reportsDir, `${tourId}.md`);
 }
 
+/**
+ * How an aborted record announces itself, so a report reader cannot take it
+ * for one (D-88).
+ *
+ * Its home is here, beside the report it is not, because two things need it:
+ * the session consumer writes it and closure has to tell it apart from a
+ * report and from no file at all (§4.6 step 1). A second copy would be a
+ * second answer to "is this a report".
+ */
+export const ABORTED_HEADING = '# Session aborted';
+
 /** How an empty list is written, so absence is readable rather than blank. */
 const NONE = 'none';
 
@@ -193,6 +204,32 @@ function claim(text: string, label: string, tourId: string): string {
     throw new ReportSchemaError(tourId, `the Claims section carries no ${label} line`);
   }
   return (found[1] ?? '').trim();
+}
+
+/**
+ * What the report path holds (SDD §4.6 step 1, D-88, D-98).
+ *
+ * Three cases and not two, because closure acts differently on each. A report
+ * is read; an aborted record means the tour did not finish and `CLOSING` is
+ * not the state that should have been reached, so closure stops; and no file
+ * at all is what a death between the generator completing and the write
+ * leaves, with every acceptance criterion passing, which closure continues
+ * through with the report recorded as lost.
+ */
+export type ReportFile =
+  | { readonly kind: 'report'; readonly report: ClosingReport }
+  | { readonly kind: 'aborted'; readonly text: string }
+  | { readonly kind: 'lost' };
+
+export function readReportFile(root: string, tourId: string): ReportFile {
+  let text: string;
+  try {
+    text = readFileSync(reportPath(root, tourId), 'utf8');
+  } catch {
+    return { kind: 'lost' };
+  }
+  if (text.trimStart().startsWith(ABORTED_HEADING)) return { kind: 'aborted', text };
+  return { kind: 'report', report: readReport(root, tourId) as ClosingReport };
 }
 
 /**

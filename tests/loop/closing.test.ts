@@ -176,10 +176,29 @@ function close(overrides: Partial<Parameters<typeof driveClosing>[0]> = {}) {
 }
 
 describe('closure reads the report from disk, not from a session', () => {
-  it('refuses to close a tour that left no report', async () => {
+  it('closes with the report recorded as lost where none arrived (D-98)', async () => {
+    // A death between the generator completing and the write leaves every
+    // acceptance criterion passing and no file at all, which is neither a
+    // report nor an aborted record. The work is committed and green, and an
+    // unclosable tour would block every later tour under D-14.
     rmSync(join(wardroomPaths(root).reportsDir, 'tour-9.md'));
 
-    await expect(close()).rejects.toThrowError(/report/i);
+    const result = await close();
+
+    expect(result.kind).toBe('closed');
+    expect(result.kind === 'closed' && result.tourLog).toContain('The report was lost');
+    // Named unrecoverable, not reported as none: pretending there were no
+    // debts is the same failure with better manners.
+    expect(result.kind === 'closed' && result.tourLog).toContain('unrecoverable');
+  });
+
+  it('stops on an aborted record, which says the session did not finish (D-88)', async () => {
+    writeFileSync(
+      join(wardroomPaths(root).reportsDir, 'tour-9.md'),
+      '# Session aborted\n\n## Errors\n\n- the model refused\n',
+    );
+
+    await expect(close()).rejects.toThrowError(/aborted record/i);
   });
 
   it('refuses to drive from a state that is not CLOSING', async () => {

@@ -3,7 +3,7 @@ import type { SDKMessage, SDKResultMessage } from '@anthropic-ai/claude-agent-sd
 import { wardroomPaths } from '../config/paths.js';
 import { atomicWriteFile } from '../fs/atomic.js';
 import type { TourState } from '../state/marker.js';
-import { reportPath } from '../state/report.js';
+import { ABORTED_HEADING, reportPath } from '../state/report.js';
 import type { UsageMeter } from '../usage/meter.js';
 
 /**
@@ -30,8 +30,10 @@ import type { UsageMeter } from '../usage/meter.js';
  * session is reported as failed rather than as a finished job list.
  */
 
-/** How an aborted record announces itself, so a report reader cannot take it for one. */
-export const ABORTED_HEADING = '# Session aborted';
+// Re-exported rather than declared: the fact belongs to the report artifact,
+// and closure has to tell an aborted record from a report and from no file at
+// all (§4.6 step 1). Two copies would be two answers to one question.
+export { ABORTED_HEADING } from '../state/report.js';
 
 /** A session that did not complete, raised where a caller must not carry on. */
 export class SessionAbortedError extends Error {
