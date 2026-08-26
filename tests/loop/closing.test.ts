@@ -500,11 +500,29 @@ describe('the closure writes what a later reader needs (§4.6 steps 4 to 7)', ()
     expect(progress).not.toMatch(/## Pending\s*\n\s*\nnothing/);
   });
 
-  it('refreshes the baseline, because the document root here is untracked', async () => {
-    await close();
+  it('refreshes the baseline after the commit, because the root here is untracked', async () => {
+    const order: string[] = [];
 
-    const baseline = readDocBaseline(root);
-    expect(baseline?.['SRS.md']?.version).toBe('1.3');
+    await close({
+      commitClosure: () => {
+        // Read at the moment of the commit: D-77 puts the refresh after it,
+        // because refreshing first would compare the new documents against
+        // themselves and pass every closure commit unconditionally.
+        order.push(readDocBaseline(root) === null ? 'no baseline yet' : 'baseline already there');
+      },
+    });
+
+    expect(order).toEqual(['no baseline yet']);
+    expect(readDocBaseline(root)?.['SRS.md']?.version).toBe('1.3');
+  });
+
+  it('leaves the baseline alone where no commit was asked for', async () => {
+    // A baseline refreshed against no commit describes documents nothing has
+    // committed, and §4.5 would compare the next tour's staged set to them.
+    const result = await close();
+
+    expect(result.kind === 'closed' && result.committed).toBe(false);
+    expect(readDocBaseline(root)).toBeNull();
   });
 
   it('clears the open-tour block', async () => {

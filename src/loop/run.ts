@@ -1,4 +1,4 @@
-import { WIP_SUBJECT_PREFIX } from '../commit/gate.js';
+import { type ClosureOccasion, WIP_SUBJECT_PREFIX } from '../commit/gate.js';
 import { loadConfig } from '../config/load.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { dirtyTreeGateRequest } from '../gates/dirty-tree.js';
@@ -72,6 +72,14 @@ export interface RunCycleInput {
    * made, rather than reporting a commit that did not happen.
    */
   readonly commitWip?: (stop: WipStop) => Promise<void> | void;
+  /**
+   * Makes the one commit a closure ends with (§4.6 step 7, D-76).
+   *
+   * Handed on to the closing drive, which owns the order the procedure fixes:
+   * the block is cleared before it and the baseline refreshed after it (D-77).
+   * Absent, the tour still closes and reports that no commit was asked for.
+   */
+  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<void> | void;
   readonly now?: () => Date;
 }
 
@@ -107,6 +115,14 @@ export interface RunOutcome {
   readonly wipRequested: boolean;
   /** The disposition a closed tour recorded, or null where none closed. */
   readonly disposition: TourDisposition | null;
+  /**
+   * Whether the closure commit was asked for (§4.6 step 7).
+   *
+   * Asked for, not made, for the reason `wipRequested` is: the loop runs no
+   * git and §4.5 may refuse the commit. False for every ending that closed no
+   * tour.
+   */
+  readonly closureCommitRequested: boolean;
 }
 
 /**
@@ -129,6 +145,7 @@ function outcome(partial: Partial<RunOutcome> & Pick<RunOutcome, 'kind'>): RunOu
     error: null,
     wipRequested: false,
     disposition: null,
+    closureCommitRequested: false,
     ...partial,
   };
 }
@@ -169,6 +186,8 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
    * cycle that resumed into `VERIFYING` or `CLOSING` finds it on disk.
    */
   let disposition: TourDisposition | null = null;
+  /** Whether the closure asked for its commit (§4.6 step 7). */
+  let closureCommitRequested = false;
   /** Set once the cycle has closed a tour, which is where an invocation ends. */
   let closed = false;
 
@@ -201,7 +220,13 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
           // The cycle ends here, whether it arrived by closing a tour or was
           // already here. One invocation is one cycle (D-83).
           if (closed) {
-            return outcome({ kind: 'idle', marker, visited, disposition });
+            return outcome({
+              kind: 'idle',
+              marker,
+              visited,
+              disposition,
+              closureCommitRequested,
+            });
           }
 
           // FR-1.6: a tour never opens over the owner's uncommitted work
@@ -320,6 +345,7 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
               config,
               marker,
               session: opened.session,
+              ...(input.commitClosure === undefined ? {} : { commitClosure: input.commitClosure }),
               now,
             });
           } finally {
@@ -328,6 +354,7 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
           marker = result.marker;
           if (result.kind === 'closed') {
             disposition = result.disposition;
+            closureCommitRequested = result.committed;
             closed = true;
           }
           // Where the drive raised a scope-change gate instead, the marker

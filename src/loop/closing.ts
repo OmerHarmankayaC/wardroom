@@ -1,3 +1,4 @@
+import type { ClosureOccasion } from '../commit/gate.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { recordClosureBaseline } from '../documents/baseline.js';
 import { appendAuditLine } from '../gates/audit.js';
@@ -45,6 +46,20 @@ export interface DriveClosingInput {
   /** The marker as resumption left it. Must read `CLOSING`. */
   readonly marker: StateMarker;
   readonly session: ClosingSession;
+  /**
+   * Makes the one commit a closure ends with (§4.6 step 7, D-76).
+   *
+   * The drive runs no git, for the reason the run loop does not: the commit is
+   * the caller's and is gated by §4.5, which may refuse it. It is a callback
+   * rather than a step here so that the order §4.6 fixes stays in one place,
+   * which is the whole point of the procedure: the block is cleared before the
+   * commit (step 6) and the baseline is refreshed after it (step 8, D-77).
+   *
+   * Absent, the closure still happens and reports that no commit was asked
+   * for, and the baseline is left alone: refreshing it without a commit would
+   * record documents as a baseline that nothing has committed.
+   */
+  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<void> | void;
   readonly now?: () => Date;
 }
 
@@ -63,13 +78,18 @@ export type ClosingResult =
       readonly claimCheck: ClaimCheck;
       readonly disposition: TourDisposition;
       readonly tourLog: string;
-      /** The occasion the commit gate is to be asked about (§4.5, D-76). */
-      readonly commitOccasion: {
-        readonly kind: 'closure';
-        readonly tourId: string;
-        readonly state: 'CLOSING';
-        readonly disposition: TourDisposition;
-      };
+      /** The occasion the commit gate was asked about (§4.5, D-76). */
+      readonly commitOccasion: ClosureOccasion;
+      /**
+       * Whether the closure commit was asked for, and so whether the baseline
+       * was refreshed (§4.6 steps 7 and 8, D-77).
+       *
+       * Asked for, not made: the gate may refuse it. Reported rather than
+       * assumed, because a baseline refreshed against no commit describes
+       * documents nothing has committed, and §4.5 would then compare the next
+       * tour's staged documents against them.
+       */
+      readonly committed: boolean;
     }
   | {
       readonly kind: 'gated';
@@ -216,12 +236,32 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
     appendPending(input.root, input.config, tourId, unfinished(block));
   }
 
-  // Step 6. The baseline the commit gate compares against, where git cannot
-  // supply one (§3.4, §4.5, D-8, D-30).
-  recordClosureBaseline(input.root, input.config);
-
-  // Step 7. The block, the failure record and the counter all go at IDLE.
+  // Step 6. The block is cleared before the commit and not after it, so the
+  // commit carries the cleared block rather than leaving it in the working
+  // tree for the next tour's first commit to pick up (D-65's rule, one level
+  // up).
   clearOpenTour(input.root, input.config.docRoot);
+
+  // Step 7. One commit, at the closure occasion. The drive runs no git: it
+  // names the occasion and the caller makes the commit, which §4.5 gates and
+  // may refuse (D-76).
+  const commitOccasion: ClosureOccasion = {
+    kind: 'closure',
+    tourId,
+    state: 'CLOSING',
+    disposition,
+  };
+  const committed = input.commitClosure !== undefined;
+  if (input.commitClosure !== undefined) await input.commitClosure(commitOccasion);
+
+  // Step 8. The baseline the commit gate compares against, after that commit
+  // and never before it (D-77), and only where git cannot supply one (§3.4,
+  // D-8, D-30). Refreshing it first would compare the new documents against
+  // themselves and pass every closure commit unconditionally, which is a
+  // silent pass inside the mechanism that exists to prevent silent divergence.
+  if (committed) recordClosureBaseline(input.root, input.config);
+
+  // Step 9. The failure record and the counter go with the transition to IDLE.
   clearLastFailure(input.root);
   const marker = advance(input.root, input.marker, { type: 'close' }, rules, now()).marker;
 
@@ -231,14 +271,8 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
     claimCheck,
     disposition,
     tourLog,
-    // Step 8. Closure does not commit: it says which occasion the commit gate
-    // is to be asked about, and the gate decides (§4.5, D-76).
-    commitOccasion: {
-      kind: 'closure',
-      tourId,
-      state: 'CLOSING',
-      disposition,
-    },
+    commitOccasion,
+    committed,
   };
 }
 
