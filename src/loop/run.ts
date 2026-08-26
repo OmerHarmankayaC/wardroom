@@ -8,6 +8,7 @@ import { type TreeChange, workingTreeChanges } from '../state/git.js';
 import { advance } from '../state/machine.js';
 import type { StateMarker, TourDisposition, TourState } from '../state/marker.js';
 import { resume } from '../state/resume.js';
+import { clearStopRequest, stopRequested } from '../state/stop-request.js';
 import { driveClosing } from './closing.js';
 import type { DriverSessionFactory } from './driver-sessions.js';
 import { driveExecuting } from './executing.js';
@@ -61,9 +62,14 @@ export interface RunCycleInput {
    */
   readonly sessions: DriverSessionFactory;
   /**
-   * Whether the run has been asked to stop (D-83). Asked once at each job
-   * boundary and nowhere else: a detach mid-job would discard exactly the work
-   * a boundary exists to protect.
+   * Whether the run has been asked to stop (D-83, D-106). Asked once at each
+   * job boundary and nowhere else: a detach mid-job would discard exactly the
+   * work a boundary exists to protect.
+   *
+   * Absent, the run reads `run/stop-requested`, which is what `detach` writes
+   * (../state/stop-request.ts). Present, the caller answers instead, which is
+   * how a drive is exercised without a file. Either way the cycle clears any
+   * request it finds at startup: see {@link runCycle}.
    */
   readonly stopRequested?: () => boolean;
   /**
@@ -153,6 +159,17 @@ function outcome(partial: Partial<RunOutcome> & Pick<RunOutcome, 'kind'>): RunOu
 export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
   const { root } = input;
   const config: ProjectConfig = loadConfig(root);
+  const askedToStop = input.stopRequested ?? (() => stopRequested(root));
+
+  // A stale request is the failure the file shape invites, and this is what
+  // closes it: a request written before this run began was aimed at a run that
+  // is already gone (D-106). Without it, a detach nobody honoured would stop
+  // the next tour at its first boundary, for a reason nobody could see.
+  //
+  // Unconditional, even where the caller answers the question itself. The file
+  // is the durable request, and a run beginning invalidates any earlier one
+  // whoever is being asked about it.
+  clearStopRequest(root);
   const now = input.now ?? (() => new Date());
   const rules = { attemptBudget: config.attemptBudget };
   const visited: TourState[] = [];
@@ -285,7 +302,7 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
               config,
               marker,
               session: opened.session,
-              ...(input.stopRequested === undefined ? {} : { stopRequested: input.stopRequested }),
+              stopRequested: askedToStop,
               now,
             });
           } finally {
@@ -293,6 +310,11 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
           }
           marker = result.marker;
           if (result.stopped) {
+            // Honoured, so the request is answered and goes (D-106). A run
+            // that died between the boundary and here leaves it standing, and
+            // the next run clears it at startup, which is the same rule
+            // arriving one cycle later.
+            clearStopRequest(root);
             // The tour stays open at the boundary it reached. Nothing to
             // commit and nothing to close: the next run picks it up by the
             // ordinary resumption path (§4.4, §5.1).

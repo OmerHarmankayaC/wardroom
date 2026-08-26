@@ -3,15 +3,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { historyLog } from '../../src/api/history.js';
 import { readInbox, undelivered } from '../../src/api/inbox.js';
-import {
-  clearStopRequest,
-  configShow,
-  decisionInject,
-  projectDetach,
-  stopRequested,
-} from '../../src/api/project.js';
+import { configShow, decisionInject, projectDetach } from '../../src/api/project.js';
 import { usageReport } from '../../src/api/usage.js';
 import { wardroomPaths } from '../../src/config/paths.js';
+import { clearStopRequest, stopRequested } from '../../src/state/stop-request.js';
 import {
   DOC_ROOT,
   given,

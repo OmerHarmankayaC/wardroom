@@ -1,7 +1,5 @@
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import type { ClosureOccasion } from '../commit/gate.js';
 import { loadConfig } from '../config/load.js';
-import { ensureRunDir, wardroomPaths } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
 import type { Notifier } from '../gates/notify.js';
 import { createDriverSessions } from '../loop/driver-sessions.js';
@@ -9,6 +7,7 @@ import { type RunOutcome, type WipStop, runCycle } from '../loop/run.js';
 import { createSessionWiring, markerOnDisk } from '../loop/wiring.js';
 import type { QueryFn } from '../roles/assembly.js';
 import { type TourState, readMarker } from '../state/marker.js';
+import { requestStop } from '../state/stop-request.js';
 import type { VerifyRunner } from '../verify/run.js';
 import { appendInbox } from './inbox.js';
 import type { InboxLine } from './inbox.js';
@@ -157,25 +156,8 @@ export function projectDetach(root: string): DetachResult {
     };
   }
 
-  ensureRunDir(root);
-  // The presence of the file is the request; it carries no contents, so
-  // nothing can disagree with it about what was asked for.
-  writeFileSync(wardroomPaths(root).stopRequestFile, '');
+  requestStop(root);
   return { kind: 'requested', state };
-}
-
-/** Whether a stop has been asked for and not yet honoured (D-106). */
-export function stopRequested(root: string): boolean {
-  return existsSync(wardroomPaths(root).stopRequestFile);
-}
-
-/**
- * Removes the request. Honouring a stop clears it, and so does a run finding
- * one at startup: a request written before this run began was aimed at a run
- * that is already gone (D-106).
- */
-export function clearStopRequest(root: string): void {
-  rmSync(wardroomPaths(root).stopRequestFile, { force: true });
 }
 
 /**

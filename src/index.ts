@@ -349,13 +349,12 @@ export {
 export {
   type DetachResult,
   type RunInput,
-  clearStopRequest,
   configShow,
   decisionInject,
   projectDetach,
   projectRun,
-  stopRequested,
 } from './api/project.js';
+export { clearStopRequest, requestStop, stopRequested } from './state/stop-request.js';
 export { type CurrentJob, type ProjectStatus, projectStatus } from './api/status.js';
 export { DEFAULT_DECIDER, type DecideInput, gateDecide, gateList, gateShow } from './api/gates.js';
 export {

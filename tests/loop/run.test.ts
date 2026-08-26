@@ -663,6 +663,121 @@ describe('a cooperative stop takes effect at a job boundary', () => {
   });
 });
 
+describe('the stop request is a file the loop reads (D-106)', () => {
+  /** What `detach` writes, written here without going through it. */
+  function writeRequest(): void {
+    ensureRunDir(root);
+    writeFileSync(wardroomPaths(root).stopRequestFile, '');
+  }
+
+  function requestStands(): boolean {
+    return readdirSync(wardroomPaths(root).runDir).includes('stop-requested');
+  }
+
+  it('deletes a stale request at startup and finishes the tour', async () => {
+    // The failure the file shape invites. A detach nobody honoured, left by a
+    // run that is already gone, would otherwise stop the next tour at its
+    // first boundary for a reason nobody could see. The request below is aimed
+    // at a run that no longer exists, and this run must not answer it.
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    writeRequest();
+    const doubles = sessions();
+
+    const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+    expect(outcome.kind).not.toBe('detached');
+    // All three jobs, not one: the tour ran its list out.
+    expect(doubles.ran).toEqual([0, 1, 2]);
+    expect(requestStands()).toBe(false);
+  });
+
+  it('honours a request that arrives while the run is up', async () => {
+    // The same file, written during the run rather than before it, which is
+    // what a detach against a live loop looks like.
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    const doubles = sessions();
+    const ran: number[] = [];
+
+    const outcome = await runCycle({
+      root,
+      sessions: {
+        ...doubles.sessions,
+        executing: () => ({
+          session: {
+            runJob: async (_job: unknown, index: number) => {
+              ran.push(index);
+              if (index === 0) writeRequest();
+            },
+            acceptancePasses: async (_job: unknown, index: number) => ran.includes(index),
+          },
+          close: async () => ({ text: null, errors: [], failed: false }),
+        }),
+      },
+      now: NOW,
+    });
+
+    expect(outcome.kind).toBe('detached');
+    expect(ran).toEqual([0]);
+  });
+
+  it('honours it by deleting it, so the next run is not stopped by the same ask', async () => {
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    const doubles = sessions();
+    const ran: number[] = [];
+
+    await runCycle({
+      root,
+      sessions: {
+        ...doubles.sessions,
+        executing: () => ({
+          session: {
+            runJob: async (_job: unknown, index: number) => {
+              ran.push(index);
+              if (index === 0) writeRequest();
+            },
+            acceptancePasses: async (_job: unknown, index: number) => ran.includes(index),
+          },
+          close: async () => ({ text: null, errors: [], failed: false }),
+        }),
+      },
+      now: NOW,
+    });
+
+    expect(requestStands()).toBe(false);
+  });
+
+  it('runs on where no request was ever written', async () => {
+    // The discriminating case for the two above: without it, a loop that never
+    // read the file at all would pass both.
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    const doubles = sessions();
+
+    const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+    expect(outcome.kind).not.toBe('detached');
+    expect(doubles.ran).toEqual([0, 1, 2]);
+  });
+
+  it('lets an injected answer stand in for the file, and clears the file anyway', async () => {
+    // The drives are exercised without a filesystem request elsewhere in this
+    // file, so the seam stays. What must not survive is the request itself: a
+    // run beginning invalidates any earlier one whoever is being asked.
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    writeRequest();
+    const doubles = sessions();
+
+    const outcome = await runCycle({
+      root,
+      sessions: doubles.sessions,
+      stopRequested: () => false,
+      now: NOW,
+    });
+
+    expect(outcome.kind).not.toBe('detached');
+    expect(requestStands()).toBe(false);
+  });
+});
+
 describe('every transition is one marker write through the machine', () => {
   it('writes the marker once per transition and never beside the machine', async () => {
     given({ state: 'IDLE' });
