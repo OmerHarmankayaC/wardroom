@@ -6,11 +6,10 @@ import { createDriverSessions } from '../loop/driver-sessions.js';
 import { type RunOutcome, type WipStop, runCycle } from '../loop/run.js';
 import { createSessionWiring, markerOnDisk } from '../loop/wiring.js';
 import type { QueryFn } from '../roles/assembly.js';
+import { type InboxLine, appendInbox } from '../state/inbox.js';
 import { type TourState, readMarker } from '../state/marker.js';
 import { requestStop } from '../state/stop-request.js';
 import type { VerifyRunner } from '../verify/run.js';
-import { appendInbox } from './inbox.js';
-import type { InboxLine } from './inbox.js';
 
 /**
  * The project operations (SDD §5.1, FR-1.1, FR-1.2, FR-1.5, FR-5.2).
@@ -176,13 +175,7 @@ export function decisionInject(
   text: string,
   options: { readonly now?: Date } = {},
 ): InboxLine {
-  const line: InboxLine = {
-    text,
-    writtenAt: (options.now ?? new Date()).toISOString(),
-    deliveredAt: null,
-  };
-  appendInbox(root, line);
-  return line;
+  return appendInbox(root, text, (options.now ?? new Date()).toISOString());
 }
 
 /**

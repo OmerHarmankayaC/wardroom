@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../config/load.js';
 import { tourLogDirectory } from '../documents/set.js';
 import { type AuditLine, readAuditLines } from '../gates/audit.js';
-import { type InboxLine, readInbox } from './inbox.js';
+import { type InboxLine, readInbox } from '../state/inbox.js';
 
 /**
  * The tour logs and the gate audit trail (SDD §5.1, FR-3.2).

@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { gateList } from '../../src/api/gates.js';
 import { historyLog } from '../../src/api/history.js';
-import { readInbox, undelivered } from '../../src/api/inbox.js';
 import { configShow, decisionInject, projectDetach } from '../../src/api/project.js';
 import { usageReport } from '../../src/api/usage.js';
 import { wardroomPaths } from '../../src/config/paths.js';
+import { readInbox, undelivered } from '../../src/state/inbox.js';
 import { clearStopRequest, stopRequested } from '../../src/state/stop-request.js';
 import {
   DOC_ROOT,
@@ -127,7 +128,7 @@ describe('the stop request is read from the file, not from the writer', () => {
 });
 
 describe('an injection waits in the inbox (FR-5.2, D-108)', () => {
-  it('appends a line carrying its text, its time and its delivery', () => {
+  it('appends a line carrying its text and its time', () => {
     decisionInject(root, 'the pilot repository moved', {
       now: new Date('2026-08-21T10:00:00.000Z'),
     });
@@ -140,7 +141,16 @@ describe('an injection waits in the inbox (FR-5.2, D-108)', () => {
     expect(JSON.parse(written)).toEqual({
       text: 'the pilot repository moved',
       written_at: '2026-08-21T10:00:00.000Z',
-      delivered_at: null,
+    });
+  });
+
+  it('answers with the line it wrote, undelivered', () => {
+    const line = decisionInject(root, 'first', { now: new Date('2026-08-21T10:00:00.000Z') });
+
+    expect(line).toEqual({
+      text: 'first',
+      writtenAt: '2026-08-21T10:00:00.000Z',
+      deliveredAt: null,
     });
   });
 
@@ -155,16 +165,9 @@ describe('an injection waits in the inbox (FR-5.2, D-108)', () => {
     writeFileSync(
       wardroomPaths(root).inboxFile,
       [
-        JSON.stringify({
-          text: 'delivered one',
-          written_at: '2026-08-21T09:00:00.000Z',
-          delivered_at: '2026-08-21T09:05:00.000Z',
-        }),
-        JSON.stringify({
-          text: 'waiting one',
-          written_at: '2026-08-21T10:00:00.000Z',
-          delivered_at: null,
-        }),
+        JSON.stringify({ text: 'delivered one', written_at: '2026-08-21T09:00:00.000Z' }),
+        JSON.stringify({ text: 'waiting one', written_at: '2026-08-21T10:00:00.000Z' }),
+        JSON.stringify({ delivered_through: 1, at: '2026-08-21T09:05:00.000Z' }),
         '',
       ].join('\n'),
     );
@@ -192,6 +195,7 @@ describe('an injection waits in the inbox (FR-5.2, D-108)', () => {
     decisionInject(root, 'go ahead and push', { now: new Date('2026-08-21T10:00:00.000Z') });
 
     expect(historyLog(root).audit).toEqual([]);
+    expect(gateList(root)).toEqual([]);
   });
 });
 

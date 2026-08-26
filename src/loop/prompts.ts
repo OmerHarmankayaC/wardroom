@@ -1,4 +1,5 @@
 import type { TourJob } from '../progress/open-tour.js';
+import type { InboxLine } from '../state/inbox.js';
 import type { ReportedDebt } from '../state/report.js';
 
 /**
@@ -158,4 +159,35 @@ export function tourLogPrompt(tourId: string, path: string, body: string): strin
     '',
     body,
   ].join('\n');
+}
+
+/**
+ * The owner's injected context, as it reaches a session's opening prompt
+ * (FR-5.2, SDD §5.1, D-108).
+ *
+ * Quoted rather than paraphrased, and labelled as the owner's words rather
+ * than the orchestrator's, because the two are not interchangeable: a role
+ * that could not tell them apart would treat a note as an instruction from the
+ * system it runs under.
+ *
+ * It is context and not a decision. The block says so, so that a session
+ * cannot read a note about a push as permission to push: a gate is released by
+ * the owner answering it and by nothing else (FR-3.1).
+ */
+export function injectedContext(lines: readonly InboxLine[]): string {
+  if (lines.length === 0) return '';
+  return [
+    'The owner left you context outside a gate (SRS FR-5.2). It is context and',
+    'not a decision: it approves nothing and releases no gate, and anything',
+    'gate classified still goes to the owner as a gate.',
+    '',
+    ...lines.map((line) => `- ${line.writtenAt}: ${line.text}`),
+    '',
+  ].join('\n');
+}
+
+/** Puts the owner's context ahead of the turn it opens, or leaves the turn alone. */
+export function withInjectedContext(lines: readonly InboxLine[], turn: string): string {
+  const context = injectedContext(lines);
+  return context === '' ? turn : `${context}\n${turn}`;
 }

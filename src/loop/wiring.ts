@@ -6,9 +6,11 @@ import { type QueryFn, assembleSession } from '../roles/assembly.js';
 import { createGateInterceptor } from '../roles/intercept.js';
 import type { RoleName } from '../roles/schema.js';
 import { createPermissionSupplier } from '../roles/supplier.js';
+import { takeUndelivered } from '../state/inbox.js';
 import { type StateMarker, type TourState, readMarker } from '../state/marker.js';
 import { UsageMeter } from '../usage/meter.js';
 import type { VerifyRunner } from '../verify/run.js';
+import { withInjectedContext } from './prompts.js';
 import { type ConsumedSession, consumeSession, runSession } from './session.js';
 
 /**
@@ -57,9 +59,19 @@ class DrivenSession {
   private consumed: Promise<ConsumedSession> | null = null;
   private lastText: string | null = null;
   private failed = false;
+  /** Whether the opening turn has been built, which is when the inbox is taken. */
+  private opened = false;
 
   constructor(
     private readonly start: (prompt: AsyncIterable<SDKUserMessage>) => Promise<ConsumedSession>,
+    /**
+     * What to put ahead of the opening turn (FR-5.2, D-108).
+     *
+     * Called exactly once, while the first turn's text is being built, which
+     * is what makes a session that dies before ever taking a turn leave the
+     * owner's lines undelivered: nothing was built, so nothing was taken.
+     */
+    private readonly openingPrologue: (turn: string) => string = (turn) => turn,
   ) {}
 
   private input(): AsyncIterable<SDKUserMessage> {
@@ -123,7 +135,11 @@ class DrivenSession {
     const arrived = new Promise<SDKResultMessage>((resolve) => {
       this.turnDone = resolve;
     });
-    this.push(text);
+    // The opening prompt, and only the opening one: the owner's lines are
+    // delivered to a session, not to every turn of it.
+    const body = this.opened ? text : this.openingPrologue(text);
+    this.opened = true;
+    this.push(body);
 
     // Whichever comes first: the turn's result, or the whole session ending.
     // A session that ends without answering is a failure, not a wait.
@@ -235,6 +251,11 @@ export function createSessionWiring(input: SessionWiringInput) {
     artifact: 'report' | 'none',
   ): { driven: DrivenSession; meter: UsageMeter } {
     const meter = new UsageMeter({ root: input.root, role, tourId, now });
+    const opening = (turn: string): string =>
+      // Taken as the prompt is built, so the lines are marked delivered at the
+      // moment they reach a session and not before (D-108). Every role, not
+      // just one: the owner's context is for whoever is working next.
+      withInjectedContext(takeUndelivered(input.root, now().toISOString()), turn);
     const driven: DrivenSession = new DrivenSession((prompt) => {
       const assembled = assembleSession({
         role,
@@ -263,7 +284,7 @@ export function createSessionWiring(input: SessionWiringInput) {
             failed: run.failed,
           }))
         : consumeSession(consume);
-    });
+    }, opening);
     return { driven, meter };
   }
 

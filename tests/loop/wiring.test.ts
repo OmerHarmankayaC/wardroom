@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -12,6 +19,7 @@ import { FAIL, PASS } from '../../src/loop/prompts.js';
 import { runCycle } from '../../src/loop/run.js';
 import { createSessionWiring, markerOnDisk } from '../../src/loop/wiring.js';
 import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
+import { undelivered } from '../../src/state/inbox.js';
 import { type StateMarker, writeMarker } from '../../src/state/marker.js';
 import { renderReport } from '../../src/state/report.js';
 import { readUsage } from '../../src/usage/record.js';
@@ -494,6 +502,138 @@ describe('a session the wiring built is intercepted and supplied', () => {
     )) as { hookSpecificOutput?: { permissionDecision?: string } };
 
     expect(answer.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+});
+
+describe("the owner's injected context reaches the next session (FR-5.2, D-108)", () => {
+  /** An injection, written straight to the record so no producer of ours made it. */
+  function inject(text: string, writtenAt: string): void {
+    ensureRunDir(root);
+    appendFileSync(
+      wardroomPaths(root).inboxFile,
+      `${JSON.stringify({ text, written_at: writtenAt })}\n`,
+    );
+  }
+
+  /** The delivery marks on disk, read as bytes. */
+  function marks(): Record<string, unknown>[] {
+    let text: string;
+    try {
+      text = readFileSync(wardroomPaths(root).inboxFile, 'utf8');
+    } catch {
+      return [];
+    }
+    return text
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line))
+      .filter((record) => Object.hasOwn(record, 'delivered_through'));
+  }
+
+  it('opens the Implementer session with every undelivered line', async () => {
+    inject('the pilot repository moved to a new host', '2026-08-21T09:00:00.000Z');
+    inject('leave the README alone this tour', '2026-08-21T09:30:00.000Z');
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const wired = wire(replyRunningEverything());
+
+    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+
+    const implementer = wired.opened.find((session) => session.role === 'implementer');
+    expect(implementer?.turns[0]).toMatch(/the pilot repository moved to a new host/);
+    expect(implementer?.turns[0]).toMatch(/leave the README alone this tour/);
+  });
+
+  it('opens a PM session with them too, because the context is for whoever works next', async () => {
+    writeProgress(null);
+    execFileSync('git', ['add', '-A'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'no tour open'], { cwd: root });
+    writeMarker(root, marker({ state: 'IDLE' }));
+    inject('the pilot repository moved to a new host', '2026-08-21T09:00:00.000Z');
+    const jobs = replyRunningEverything();
+    const wired = wire((prompt, opened) => {
+      if (prompt.includes('Plan the next tour')) {
+        writeProgress(block);
+        return 'planned';
+      }
+      return jobs(prompt, opened);
+    });
+
+    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+
+    const pm = wired.opened.find((session) => session.role === 'pm');
+    expect(pm?.turns[0]).toMatch(/the pilot repository moved to a new host/);
+  });
+
+  it('marks them delivered as the prompt is built, and delivers them once', async () => {
+    inject('the pilot repository moved to a new host', '2026-08-21T09:00:00.000Z');
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const wired = wire(replyRunningEverything());
+
+    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+
+    expect(marks()).toHaveLength(1);
+    expect(marks()[0]?.delivered_through).toBe(1);
+    expect(typeof marks()[0]?.at).toBe('string');
+    // One session opened with it; the ones after it did not, because the note
+    // was already delivered when they were built.
+    const carrying = wired.opened.filter((session) =>
+      session.turns[0]?.includes('the pilot repository moved to a new host'),
+    );
+    expect(carrying).toHaveLength(1);
+  });
+
+  it('leaves a session ahead of the first one with nothing to carry', async () => {
+    // Only the opening turn takes the inbox, and only once per session: the
+    // owner's lines are delivered to a session, not to every turn of it.
+    inject('a note', '2026-08-21T09:00:00.000Z');
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const wired = wire(replyRunningEverything());
+
+    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+
+    const implementer = wired.opened.find((session) => session.role === 'implementer');
+    expect(implementer?.turns.slice(1).filter((turn) => turn.includes('a note'))).toEqual([]);
+  });
+
+  it('leaves them undelivered where the session died before its first turn', async () => {
+    // Taken as the prompt is built, so a session nobody ever spoke to takes
+    // nothing: it never built one. The session below is opened and closed with
+    // no turn between, which is what a death before the first prompt leaves.
+    inject('a note nobody read', '2026-08-21T09:00:00.000Z');
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const config = loadConfig(root);
+    const wiring = createSessionWiring({
+      root,
+      config,
+      marker: () => markerOnDisk(root),
+      query: (params) =>
+        (async function* (): AsyncGenerator<SDKMessage, void> {
+          if (typeof params.prompt === 'string') return;
+          for await (const _message of params.prompt) {
+            yield resultMessage({ text: 'done' });
+          }
+        })() as unknown as Query,
+      now: NOW,
+    });
+
+    const { driven } = wiring.openFor('implementer', 'EXECUTING', TOUR, 'none');
+    await driven.close();
+
+    expect(marks()).toEqual([]);
+    expect(undelivered(root).map((line) => line.text)).toEqual(['a note nobody read']);
+  });
+
+  it('opens with nothing where the owner has injected nothing', async () => {
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const wired = wire(replyRunningEverything());
+
+    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+
+    const implementer = wired.opened.find((session) => session.role === 'implementer');
+    // No preamble at all, and no record of a delivery that did not happen: a
+    // mark for an empty delivery would put a line in a file the owner reads.
+    expect(implementer?.turns[0]).not.toMatch(/releases no gate/);
+    expect(marks()).toEqual([]);
   });
 });
 

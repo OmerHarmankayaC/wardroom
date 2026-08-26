@@ -388,5 +388,6 @@ export {
   InboxLineUnreadableError,
   appendInbox,
   readInbox,
+  takeUndelivered,
   undelivered,
-} from './api/inbox.js';
+} from './state/inbox.js';
