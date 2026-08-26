@@ -8,7 +8,11 @@ import { decide as decideGate, enqueue } from '../../src/gates/queue.js';
 import { type DriverSessionFactory, fixedSessions } from '../../src/loop/driver-sessions.js';
 import { runCycle } from '../../src/loop/run.js';
 import type { ScopedSession } from '../../src/loop/wiring.js';
-import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
+import {
+  NO_OPEN_TOUR_STATEMENT,
+  type OpenTourBlock,
+  renderOpenTourBlock,
+} from '../../src/progress/open-tour.js';
 import { advance } from '../../src/state/machine.js';
 import { type StateMarker, readMarker, writeMarker } from '../../src/state/marker.js';
 import { writeReport } from '../../src/state/report.js';
@@ -90,7 +94,9 @@ function writeProgress(open: OpenTourBlock | null): void {
       '',
       '## Open tour',
       '',
-      open === null ? 'None.' : renderOpenTourBlock(open),
+      // The statement §3.5 fixes, not a paraphrase: "None." parses as a
+      // malformed block, which is a different answer from no tour at all.
+      open === null ? NO_OPEN_TOUR_STATEMENT : renderOpenTourBlock(open),
       '',
       '## Done',
       '',
@@ -155,7 +161,11 @@ function head(): string {
  */
 function given(overrides: Partial<StateMarker>): void {
   const at = overrides.jobIndex ?? 0;
-  if (overrides.tourId != null) {
+  // A tour that is over left the block cleared (§4.6 step 6), and a marker at
+  // IDLE against an open block is a conflict, not a window (D-104).
+  if (overrides.tourId == null && (overrides.state ?? 'IDLE') === 'IDLE') {
+    writeProgress(null);
+  } else if (overrides.tourId != null) {
     writeProgress({
       ...block,
       jobs: block.jobs.map((job, index) => ({
@@ -163,6 +173,14 @@ function given(overrides: Partial<StateMarker>): void {
         status: index < at ? 'done' : job.status,
       })),
     });
+  }
+  // Committed, because the block is a tracked file here and a tour never
+  // opens over uncommitted work without the owner saying so (FR-1.6): an
+  // uncommitted fixture would raise the dirty-tree gate instead.
+  if (
+    execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() !== ''
+  ) {
+    commit('the state the tour is resumed from');
   }
   writeMarker(root, marker(overrides));
 }
@@ -332,8 +350,10 @@ describe('the loop calls the driver the marker names', () => {
 
 describe('one invocation is one cycle', () => {
   it('runs IDLE to IDLE and returns rather than planning again', async () => {
+    // From a closed boundary: the block is cleared, as closure left it, and
+    // planning writes the one this cycle runs (§4.1 step 7).
     given({ state: 'IDLE' });
-    const doubles = sessions();
+    const doubles = sessions({ planWrites: true });
 
     const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
 
@@ -351,7 +371,7 @@ describe('one invocation is one cycle', () => {
 
   it('hands each job to the session exactly once over that cycle', async () => {
     given({ state: 'IDLE' });
-    const doubles = sessions();
+    const doubles = sessions({ planWrites: true });
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
 
@@ -366,7 +386,8 @@ describe('one invocation is one cycle', () => {
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
 
-    expect(doubles.planned).toEqual([]);
+    // Once, for this cycle, and not again after IDLE is reached.
+    expect(doubles.planned).toEqual([0]);
   });
 });
 
@@ -647,7 +668,7 @@ describe('every transition is one marker write through the machine', () => {
     given({ state: 'IDLE' });
     writes.length = 0;
     advances.length = 0;
-    const doubles = sessions();
+    const doubles = sessions({ planWrites: true });
 
     await runCycle({ root, sessions: doubles.sessions, now: NOW });
 
@@ -809,5 +830,80 @@ describe('a disposition decided before CLOSING reaches CLOSING', () => {
 
     expect(closed.kind).toBe('idle');
     expect(closed.disposition).toBe('carried');
+  });
+});
+
+/**
+ * The three kill points that used to deadlock (SDD §4.4, D-104).
+ *
+ * The first rule written here compared the two records for identity, and a
+ * running kill test showed what that meant: three of five kill points stopped
+ * the run permanently, writing nothing, with the same message on every retry.
+ * The reason is structural. §4.2 writes the block and its commit first (D-65)
+ * and the marker after (D-47), so every window §4.4 tabulates is a moment when
+ * the two records legitimately differ.
+ *
+ * Each case below is the repository as that death left it: the block written
+ * and committed, the marker not yet advanced.
+ */
+describe('a run resumes from the lag the write order creates', () => {
+  /** Marks the first `done` rows, as a boundary leaves the block. */
+  function blockAt(done: number): OpenTourBlock {
+    return {
+      ...block,
+      jobs: block.jobs.map((job, index) => ({
+        ...job,
+        status: index < done ? ('done' as const) : job.status,
+      })),
+    };
+  }
+
+  /** The block committed and the marker left where the death found it. */
+  function died(rowsDone: number, at: Partial<StateMarker>): void {
+    writeProgress(blockAt(rowsDone));
+    commit(`job ${rowsDone}`);
+    writeMarker(root, marker(at));
+  }
+
+  for (const rowsDone of [1, 2]) {
+    it(`resumes where job ${rowsDone} was committed and the marker not advanced`, async () => {
+      died(rowsDone, { state: 'EXECUTING', tourId: TOUR, jobIndex: rowsDone - 1 });
+      const doubles = sessions();
+
+      const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+      expect(outcome.kind).toBe('idle');
+      expect(outcome.disposition).toBe('closed');
+    });
+  }
+
+  it('resumes where the block was cleared and the closure commit not made', async () => {
+    // §4.6 step 6 clears the block before the commit, so a death between them
+    // leaves a marker naming a tour and a section saying none is open.
+    writeProgress(null);
+    commit('the cleared block');
+    writeMarker(
+      root,
+      marker({ state: 'CLOSING', tourId: TOUR, jobIndex: 3, disposition: 'closed' }),
+    );
+
+    const outcome = await runCycle({ root, sessions: sessions().sessions, now: NOW });
+
+    expect(outcome.kind).toBe('idle');
+  });
+
+  it('still stops on a reading no sequence produces, and writes nothing', async () => {
+    // Two rows ahead: no window skips a job, because one boundary moves one
+    // row and writes the marker after it.
+    died(2, { state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    const before = readMarker(root);
+    const doubles = sessions();
+
+    const outcome = await runCycle({ root, sessions: doubles.sessions, now: NOW });
+
+    expect(outcome.kind).toBe('stopped');
+    expect(outcome.reason).toMatch(/more than one row ahead/);
+    expect(doubles.opened).toEqual([]);
+    expect(readMarker(root)).toEqual(before);
   });
 });

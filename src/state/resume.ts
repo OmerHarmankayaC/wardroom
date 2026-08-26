@@ -11,6 +11,7 @@ import {
   checkHeadCommit,
   crossCheckOpenTour,
   firstUnfinishedRow,
+  isCrossCheckConflict,
 } from './cross-check.js';
 import { headCommit, isWorkingTreeDirty } from './git.js';
 import { type LastFailure, failedRoute, readLastFailure } from './last-failure.js';
@@ -171,10 +172,10 @@ function actionFor(
 
 /** The lines a stopped resumption owes the owner: both readings, neither preferred. */
 function crossCheckLines(check: CrossCheck): string[] {
-  if (check.kind === 'disagreed') {
+  if (check.kind === 'conflict') {
     return check.disagreements.map(
       (pair) =>
-        `${pair.pair}: the marker says ${pair.marker} and the open-tour block says ${pair.block}. Both are records and neither is evidence, so nothing here picks a winner (SDD §4.4, D-96).`,
+        `${pair.pair}: the marker says ${pair.marker} and the open-tour block says ${pair.block}. ${pair.rule}. Both are records and neither is evidence, so nothing here picks a winner (SDD §4.4, D-96, D-104).`,
     );
   }
   if (check.kind === 'unreadable-block') {
@@ -183,6 +184,22 @@ function crossCheckLines(check: CrossCheck): string[] {
     ];
   }
   return [];
+}
+
+/** What a permitted reading is worth saying out loud, and nothing more. */
+function crossCheckEvent(check: CrossCheck): string | null {
+  switch (check.kind) {
+    case 'aligned':
+      return 'The open-tour cross-check found the two records aligned on both pairs (SDD §4.4, D-96, D-104).';
+    case 'lagging':
+      return `The open-tour cross-check found the block one row ahead of the marker (job_index ${check.markerJobIndex}, first row not done ${check.blockRow}): the job was committed and the marker not yet advanced, which is the lag §4.2's write order creates on purpose. Resumption proceeds by step 4's evidence rather than by either record (D-104).`;
+    case 'adopting':
+      return `The block names ${check.blockTour} and the marker names no tour, under a PLANNING marker: a finished plan whose block was written before the marker, which is adopted (SDD §4.4 step 4, D-49).`;
+    case 'block-cleared':
+      return `The marker names ${check.markerTour} and the block is cleared, under a CLOSING marker: the block is cleared before the closure commit, so this is the window between them (§4.6 step 6).`;
+    default:
+      return null;
+  }
 }
 
 /** The line an unreachable `head_commit` owes the owner (§4.4 step 2, D-100). */
@@ -252,11 +269,25 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
   const headCommitCheck = checkHeadCommit(root, marker.headCommit, head);
   const progressCrossCheck = crossCheckOpenTour(marker, block);
   const stopping = [...headCommitLines(headCommitCheck), ...crossCheckLines(progressCrossCheck)];
+  // Read through the one predicate, so no caller decides for itself which
+  // readings stop a run (D-104's table has four that do not).
+  const stopped =
+    headCommitCheck.kind === 'unreachable' || isCrossCheckConflict(progressCrossCheck);
 
-  if (stopping.length > 0) {
+  if (stopped) {
+    // A reading that stops the run always says which reading it was. Without
+    // this, a conflict kind added without its rendering would stop the run
+    // with the general sentence and nothing to look at, which is the whole of
+    // what a stop is for.
+    const readings =
+      stopping.length > 0
+        ? stopping
+        : [
+            `the cross-check answered ${progressCrossCheck.kind} and head_commit answered ${headCommitCheck.kind}, one of which stops resumption and neither of which was rendered. That is a defect in this module rather than in the repository.`,
+          ];
     events.push(
-      'Resumption stopped without writing: the records it reconstructs from do not agree, and no rule picks a winner between them (SDD §4.4, D-96, D-100).',
-      ...stopping,
+      'Resumption stopped without writing: the records it reconstructs from cannot be reconciled, and no rule picks a winner between them (SDD §4.4, D-96, D-100, D-104).',
+      ...readings,
     );
     return unresolved({
       headCommit: head,
@@ -267,7 +298,7 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
       gate: null,
       progressCrossCheck,
       headCommitCheck,
-      unresolved: stopping,
+      unresolved: readings,
     });
   }
 
@@ -280,9 +311,15 @@ export function resume(root: string, now: Date = new Date()): ResumeResult {
       ].join(' '),
     );
   }
-  if (progressCrossCheck.kind === 'agreed') {
+  const crossCheckSaid = crossCheckEvent(progressCrossCheck);
+  if (crossCheckSaid !== null) events.push(crossCheckSaid);
+  if (block.kind === 'malformed' && !isCrossCheckConflict(progressCrossCheck)) {
+    // The marker names no tour, so there was nothing to compare the block
+    // against and it did not stop anything. Said out loud rather than passed
+    // over: an unreadable block is evidence of a defect somewhere, and
+    // planning is about to write over it.
     events.push(
-      'The open-tour cross-check agreed on both pairs, tour_id and job_index (SDD §4.4, D-96, D-100).',
+      `The open-tour block does not parse (${block.field}: ${block.problem}). The marker names no tour, so there was nothing to compare it against and resumption was not stopped by it.`,
     );
   }
   if (dirty) {

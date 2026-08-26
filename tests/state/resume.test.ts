@@ -134,6 +134,10 @@ function markerFor(state: TourState, overrides: Partial<StateMarker> = {}): Stat
 }
 
 function given(state: TourState, overrides: Partial<StateMarker> = {}): void {
+  // A repository at a closed boundary left the block cleared (§4.6 step 6);
+  // a marker at IDLE against an open block is a conflict, not a window
+  // (D-104). PLANNING keeps the block, which is D-49's adoption seam.
+  if (state === 'IDLE') writeBlock(null);
   ensureRunDir(root);
   writeMarker(root, markerFor(state, overrides));
 }
@@ -383,15 +387,111 @@ describe('validation against the repository (SDD §4.4 step 2)', () => {
     expect(resume(root).headCommitStale).toBe(false);
   });
 
-  it('reports the cross-check as agreed where both pairs agree (B-9, D-96)', () => {
+  it('reports the two records aligned where they say the same thing (B-9, D-96)', () => {
     given('EXECUTING');
 
     const result = resume(root);
 
-    expect(result.progressCrossCheck).toEqual({ kind: 'agreed' });
+    expect(result.progressCrossCheck).toEqual({ kind: 'aligned' });
   });
 
-  it('agrees with a block written by hand rather than by the renderer (D-55)', () => {
+  /**
+   * The lag §4.2's write order creates on purpose (D-104).
+   *
+   * The status update rides into the job's commit (D-65) and the marker is
+   * advanced after it (D-47), so a death between the two leaves the block one
+   * row ahead. Refusing there was a deadlock at the point a death is most
+   * likely, not a detector.
+   */
+  it('permits the block being exactly one row ahead, which is the committed job', () => {
+    writeBlock({
+      ...AGREEING_BLOCK,
+      jobs: [
+        { title: 'First job', criterion: 'a', status: 'done' },
+        { title: 'Second job', criterion: 'b', status: 'done' },
+        { title: 'Third job', criterion: 'c', status: 'pending' },
+      ],
+    });
+    given('EXECUTING', { jobIndex: 1 });
+
+    const result = resume(root);
+
+    expect(result.progressCrossCheck).toEqual({ kind: 'lagging', markerJobIndex: 1, blockRow: 2 });
+    expect(result.state).toBe('EXECUTING');
+    expect(result.nextAction).toBe('RESUME_EXECUTION');
+    // Resumption proceeds, and where it picks up is step 4's business: the
+    // criterion is the evidence, not either record.
+    expect(result.marker).not.toBeNull();
+  });
+
+  it('stops where the block is two rows ahead, since no window skips a job', () => {
+    writeBlock({
+      ...AGREEING_BLOCK,
+      jobs: [
+        { title: 'First job', criterion: 'a', status: 'done' },
+        { title: 'Second job', criterion: 'b', status: 'done' },
+        { title: 'Third job', criterion: 'c', status: 'pending' },
+      ],
+    });
+    given('EXECUTING', { jobIndex: 0 });
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.unresolved.join(' ')).toMatch(/more than one row ahead/);
+  });
+
+  it('stops where the marker leads the block, which nothing writes', () => {
+    // The invariant: nothing writes the marker before the block, so a marker
+    // ahead of it is a lost block write or a hand edit.
+    given('EXECUTING', { jobIndex: 2 });
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.unresolved.join(' ')).toMatch(/marker cannot lead/);
+  });
+
+  it('permits a marker naming a tour against a cleared block, in CLOSING only', () => {
+    writeBlock(null);
+    given('CLOSING');
+
+    expect(resume(root).progressCrossCheck).toEqual({
+      kind: 'block-cleared',
+      markerTour: 'tour-1',
+    });
+    expect(resume(root).nextAction).toBe('RESUME_CLOSING');
+  });
+
+  it('stops on a marker naming a tour against a cleared block in any other state', () => {
+    writeBlock(null);
+    given('EXECUTING');
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.unresolved.join(' ')).toMatch(/closure commit/);
+  });
+
+  it('permits a block naming a tour against a nameless marker, in PLANNING only', () => {
+    given('PLANNING');
+
+    expect(resume(root).progressCrossCheck).toEqual({ kind: 'adopting', blockTour: 'tour-1' });
+    expect(resume(root).nextAction).toBe('REPLAN');
+  });
+
+  it('stops on a block naming a tour against a nameless marker in any other state', () => {
+    // The block is written before the marker at the end of planning, and
+    // nowhere else, so this is a window in PLANNING and nothing anywhere else.
+    given('VERIFYING', { tourId: null, jobIndex: null });
+
+    const result = resume(root);
+
+    expect(result.nextAction).toBe('STOP_UNRESOLVED');
+    expect(result.unresolved.join(' ')).toMatch(/end of planning/);
+  });
+
+  it('is aligned with a block written by hand rather than by the renderer (D-55)', () => {
     // The block a person co-writes is the one this will meet: the fixture
     // above goes through `renderOpenTourBlock`, so on its own it would only
     // show that the writer and the reader agree with each other.
@@ -422,7 +522,7 @@ describe('validation against the repository (SDD §4.4 step 2)', () => {
     );
     given('EXECUTING');
 
-    expect(resume(root).progressCrossCheck).toEqual({ kind: 'agreed' });
+    expect(resume(root).progressCrossCheck).toEqual({ kind: 'aligned' });
   });
 
   it('stops on a tour_id the block does not carry, reporting both readings', () => {
@@ -432,19 +532,10 @@ describe('validation against the repository (SDD §4.4 step 2)', () => {
 
     expect(result.state).toBeNull();
     expect(result.nextAction).toBe('STOP_UNRESOLVED');
-    expect(result.progressCrossCheck.kind).toBe('disagreed');
+    expect(result.progressCrossCheck.kind).toBe('conflict');
     // Both readings, neither preferred: that is the whole point of stopping.
     expect(result.unresolved.join(' ')).toContain('tour-2');
     expect(result.unresolved.join(' ')).toContain('tour-1');
-  });
-
-  it('stops on a job_index the block does not agree with, reporting both readings', () => {
-    given('EXECUTING', { jobIndex: 0 });
-
-    const result = resume(root);
-
-    expect(result.nextAction).toBe('STOP_UNRESOLVED');
-    expect(result.unresolved.join(' ')).toMatch(/job_index/);
   });
 
   it('compares job_index against the first row not marked done, not against the row count', () => {
@@ -458,7 +549,7 @@ describe('validation against the repository (SDD §4.4 step 2)', () => {
     });
     given('EXECUTING', { jobIndex: 1 });
 
-    expect(resume(root).progressCrossCheck).toEqual({ kind: 'agreed' });
+    expect(resume(root).progressCrossCheck).toEqual({ kind: 'aligned' });
   });
 
   it('stops where the marker names a tour and the block does not parse', () => {
@@ -471,14 +562,11 @@ describe('validation against the repository (SDD §4.4 step 2)', () => {
     expect(result.progressCrossCheck.kind).toBe('unreadable-block');
   });
 
-  it('compares nothing where the marker names no tour, which is IDLE and PLANNING', () => {
-    // A pair with nothing on the marker's side is not two records disagreeing.
-    // Stopping here would break the D-49 adoption path, where a PLANNING
-    // marker meets a block that was written just before the death.
-    given('PLANNING');
+  it('compares nothing where neither record names a tour', () => {
+    given('IDLE');
 
     expect(resume(root).progressCrossCheck).toEqual({ kind: 'no-tour' });
-    expect(resume(root).nextAction).toBe('REPLAN');
+    expect(resume(root).nextAction).toBe('PLAN_TOUR');
   });
 
   it('writes nothing when it stops', () => {
