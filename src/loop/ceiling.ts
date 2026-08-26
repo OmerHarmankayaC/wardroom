@@ -1,5 +1,5 @@
 import type { ProjectConfig } from '../config/schema.js';
-import { usageSummary } from '../usage/record.js';
+import { type UsageSummary, usageSummary } from '../usage/record.js';
 
 /**
  * The usage ceiling at a job boundary (SDD §3.2, SRS FR-1.4, BACKLOG D-66).
@@ -37,16 +37,18 @@ export type CeilingVerdict =
       readonly ceilingUsd: number;
     };
 
-/** Reads the usage record and answers whether the next job can be expected to fit. */
-export function ceilingVerdict(
-  root: string,
-  config: ProjectConfig,
-  tourId: string | null,
-): CeilingVerdict {
-  const summary = usageSummary(root, { tourId, authMode: config.authMode });
+/**
+ * The comparison itself, over a summary somebody else read.
+ *
+ * Separated from the read so that a caller which already holds the summary,
+ * `status` does (SDD §5.1), asks this rather than restating the arithmetic.
+ * Two statements of the rule would be two places for the boundary to move, and
+ * the surface reporting one answer while the drive acts on another is the
+ * worst version of that.
+ */
+export function ceilingAgainst(summary: UsageSummary, ceilingUsd: number): CeilingVerdict {
   if (summary.kind === 'inactive') return { kind: 'inactive', reason: summary.reason };
 
-  const ceilingUsd = config.usageBudget.usd;
   // Reaches, not exceeds. A rule waiting for strictly greater would let one
   // more job start on a budget already spent.
   const reached = summary.spentUsd + summary.largestJobUsd >= ceilingUsd;
@@ -57,4 +59,16 @@ export function ceilingVerdict(
     largestJobUsd: summary.largestJobUsd,
     ceilingUsd,
   };
+}
+
+/** Reads the usage record and answers whether the next job can be expected to fit. */
+export function ceilingVerdict(
+  root: string,
+  config: ProjectConfig,
+  tourId: string | null,
+): CeilingVerdict {
+  return ceilingAgainst(
+    usageSummary(root, { tourId, authMode: config.authMode }),
+    config.usageBudget.usd,
+  );
 }

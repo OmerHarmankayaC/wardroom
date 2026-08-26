@@ -34,6 +34,17 @@ export interface WardroomPaths {
   readonly usageLog: string;
   /** One closing report per tour, which closure reads (SDD §3.0, §4.6, D-73). */
   readonly reportsDir: string;
+  /** The owner's out-of-band context for the roles (SDD §3.0, §5.1, D-108). */
+  readonly inboxFile: string;
+  /**
+   * The cooperative stop request (SDD §5.1, D-106).
+   *
+   * A file rather than a signal or a socket: `run` holds the terminal, so
+   * `detach` is a second process and cannot call into the first, and durable
+   * state lives in repository files (TD-3). Its presence is the request and
+   * its absence is the whole of the answer, so it carries no contents.
+   */
+  readonly stopRequestFile: string;
   readonly gatesDir: string;
   readonly auditLog: string;
 }
@@ -53,6 +64,8 @@ export function wardroomPaths(root: string): WardroomPaths {
     lastFailureFile: join(runDir, 'last-failure.json'),
     usageLog: join(runDir, 'usage.jsonl'),
     reportsDir: join(runDir, 'reports'),
+    inboxFile: join(runDir, 'inbox.jsonl'),
+    stopRequestFile: join(runDir, 'stop-requested'),
     gatesDir,
     auditLog: join(gatesDir, 'audit.jsonl'),
   };

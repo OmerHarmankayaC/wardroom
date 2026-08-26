@@ -332,5 +332,43 @@ export {
   type DriveClosingInput,
   driveClosing,
 } from './loop/closing.js';
-export { type CeilingVerdict, ceilingVerdict } from './loop/ceiling.js';
+export { type CeilingVerdict, ceilingAgainst, ceilingVerdict } from './loop/ceiling.js';
 export { type FailedRoute, failedRoute } from './state/last-failure.js';
+
+/**
+ * The internal API (SDD §5.1, FR-5.1). Every surface consumes this set and
+ * nothing else; a surface with an operation of its own is the violation the
+ * requirement names.
+ */
+export {
+  OPERATION_NAMES,
+  type OperationName,
+  UNIMPLEMENTED_OPERATIONS,
+  operations,
+} from './api/operations.js';
+export {
+  type DetachResult,
+  type RunInput,
+  clearStopRequest,
+  configShow,
+  decisionInject,
+  projectDetach,
+  projectRun,
+  stopRequested,
+} from './api/project.js';
+export { type CurrentJob, type ProjectStatus, projectStatus } from './api/status.js';
+export { DEFAULT_DECIDER, type DecideInput, gateDecide, gateList, gateShow } from './api/gates.js';
+export {
+  type UsageBucket,
+  type UsageReport,
+  type UsageReportInput,
+  usageReport,
+} from './api/usage.js';
+export { type HistoryLog, type TourLog, historyLog } from './api/history.js';
+export {
+  type InboxLine,
+  InboxLineUnreadableError,
+  appendInbox,
+  readInbox,
+  undelivered,
+} from './api/inbox.js';

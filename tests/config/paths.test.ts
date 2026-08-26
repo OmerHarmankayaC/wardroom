@@ -34,9 +34,26 @@ describe('wardroomPaths', () => {
       // derived record, rebuildable at any closed boundary, which is why it
       // sits under run/ rather than beside config.json.
       docBaselineFile: join(root, '.wardroom', 'run', 'doc-baseline.json'),
+      // The owner's out-of-band context for the roles (§3.0, D-108), and the
+      // cooperative stop request (§5.1, D-106). The request is a file rather
+      // than a signal because `run` holds the terminal and `detach` is a
+      // second process; its presence is the whole of the request, so it
+      // carries no contents.
+      inboxFile: join(root, '.wardroom', 'run', 'inbox.jsonl'),
+      stopRequestFile: join(root, '.wardroom', 'run', 'stop-requested'),
       gatesDir: join(root, '.wardroom', 'run', 'gates'),
       auditLog: join(root, '.wardroom', 'run', 'gates', 'audit.jsonl'),
     });
+  });
+
+  it('keeps the inbox and the stop request among the runtime records', () => {
+    // Both are runtime state and neither is the contract: a clone that carried
+    // a stale stop request would stop at its first job boundary for a reason
+    // nobody could see (D-106).
+    const paths = wardroomPaths(root);
+
+    expect(paths.inboxFile.startsWith(paths.runDir)).toBe(true);
+    expect(paths.stopRequestFile.startsWith(paths.runDir)).toBe(true);
   });
 
   it('keeps the closure baseline among the runtime records', () => {
