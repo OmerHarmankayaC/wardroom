@@ -11,7 +11,7 @@ import { readAuditLines } from '../../src/gates/audit.js';
 import { authorizationFor, decide, enqueue } from '../../src/gates/queue.js';
 import { createDriverSessions, fixedSessions } from '../../src/loop/driver-sessions.js';
 import { driveExecuting } from '../../src/loop/executing.js';
-import { NO, YES } from '../../src/loop/prompts.js';
+import { FAIL, PASS } from '../../src/loop/prompts.js';
 import { type RunOutcome, runCycle } from '../../src/loop/run.js';
 import { createSessionWiring, markerOnDisk } from '../../src/loop/wiring.js';
 import {
@@ -504,7 +504,7 @@ describe('a run killed at each transition reaches the same end as one that was n
 
       const asked = /criterion of job (\d+)/.exec(prompt)?.[1];
       if (asked !== undefined) {
-        return done.has(Number(asked) - 1) ? `checked\n${YES}` : `checked\n${NO}`;
+        return done.has(Number(asked) - 1) ? `checked\n${PASS}` : `checked\n${FAIL}`;
       }
 
       const worked = /^Job (\d+) of/.exec(prompt)?.[1];

@@ -5,9 +5,9 @@ import type { ImplementerSession } from './executing.js';
 import type { PmSession } from './planning.js';
 import {
   acceptancePrompt,
-  answersYes,
   jobPrompt,
   planningPrompt,
+  readAcceptanceAnswer,
   reportPrompt,
   settleDebtPrompt,
   tourLogPrompt,
@@ -28,6 +28,27 @@ import type { ScopedSession, SessionWiring } from './wiring.js';
  * two states. A retry after `FAILED` calls `executing` again and gets a second
  * session, which is what D-99 says and what NFR-4's attribution by state needs.
  */
+
+/**
+ * A session that answered the acceptance question with neither token.
+ *
+ * §4.2 fixes the answer's grammar and says that anything else is neither
+ * answer and stops the resumption rather than being guessed at (D-103).
+ * Reading it as `fail` would redo a job that was done, which is how work is
+ * lost; reading it as `pass` would skip one that was not. So the drive stops
+ * and the run says what it was given.
+ */
+export class AcceptanceAnswerUnreadableError extends Error {
+  readonly jobIndex: number;
+
+  constructor(jobIndex: number, answer: string | null) {
+    super(
+      `job ${jobIndex + 1}: the session answered the acceptance question with neither \`pass\` nor \`fail\` on its last line, and the answer is not guessed at (SDD §4.2, D-103). It said: ${answer === null ? 'nothing at all' : JSON.stringify(answer.slice(-200))}`,
+    );
+    this.name = 'AcceptanceAnswerUnreadableError';
+    this.jobIndex = jobIndex;
+  }
+}
 
 /**
  * The three openers, one per role-bearing state.
@@ -89,9 +110,13 @@ export function createDriverSessions(input: DriverSessionInput): DriverSessionFa
         },
         acceptancePasses: async (job, index) => {
           const answer = await driven.turn(acceptancePrompt(job, index));
-          // A failed turn is not a passing criterion. The affirmative is the
-          // answer that lets work be skipped, so silence must not be it.
-          return !answer.failed && answersYes(answer.text);
+          // A turn that failed produced no answer at all, which is the same
+          // absence as an unreadable one and gets the same treatment.
+          const read = answer.failed ? 'unreadable' : readAcceptanceAnswer(answer.text);
+          if (read === 'unreadable') {
+            throw new AcceptanceAnswerUnreadableError(index, answer.text);
+          }
+          return read === 'pass';
         },
       };
       return {

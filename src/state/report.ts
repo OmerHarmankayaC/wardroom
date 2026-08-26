@@ -16,11 +16,15 @@ import { atomicWriteFile } from '../fs/atomic.js';
  * therefore what a session *said*, kept in a shape another process can check
  * against `.git`.
  *
- * **The grammar is fixed here and nowhere else, which is a debt.** SRS §3.5
- * fixes the open-tour block's grammar because two roles read and write it; the
- * report has the same property and no section fixes it. What follows is the
- * smallest grammar that carries what §4.6 checks, and it is reported rather
- * than left implied.
+ * **The grammar is SDD §4.2's (D-94, amended by D-102), and this reads it.**
+ * It was fixed here and nowhere else for two tours, which was a contract
+ * between a model and a parser that neither side could be held to; the
+ * document now carries it. The amendment went the other way from the usual:
+ * D-94's first shape folded the commits into the Jobs table and had no Claims
+ * section, which is not what this module reads, and the document moved to the
+ * parser's shape because closure's first act is to check two claims against
+ * `.git` (§4.6 step 2, D-78) and a report that buries them in a job table
+ * makes that harder for nothing.
  */
 
 export interface ReportedJob {

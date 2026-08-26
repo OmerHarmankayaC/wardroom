@@ -239,7 +239,8 @@ export {
   createSessionWiring,
   markerOnDisk,
 } from './loop/wiring.js';
-export { YES, NO, answersYes } from './loop/prompts.js';
+export { type AcceptanceAnswer, FAIL, PASS, readAcceptanceAnswer } from './loop/prompts.js';
+export { AcceptanceAnswerUnreadableError } from './loop/driver-sessions.js';
 export { createPreviewBuilder, roleInState } from './gates/build-preview.js';
 export {
   type AssembleSessionInput,

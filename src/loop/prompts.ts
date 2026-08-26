@@ -11,39 +11,54 @@ import type { ReportedDebt } from '../state/report.js';
  * a requirement with two homes, and the copy in the prompt is the one nobody
  * bumps when the document changes.
  *
- * **The one-word answers are a contract, and this is their single home.** Two
- * of the turns below ask a question the loop has to act on, and a model
- * answering in prose is a model the parser cannot be held to (D-94's lesson,
- * one level down). The token is written into the question and read back by
- * {@link answersYes}, so the asking side and the reading side cannot drift.
- * The design document names no grammar for either, which is reported as a
- * document debt rather than settled here.
+ * **The acceptance answer's grammar is fixed by SDD §4.2 (D-103) and read
+ * here.** §4.4 step 4 resumes at the first job whose acceptance criterion does
+ * not pass, so the loop asks a session and reads the answer, and a message a
+ * model produces and a parser consumes is a contract in exactly the sense D-94
+ * names. The token is written into the question from the same constant the
+ * reader compares against, so the asking side and the reading side cannot
+ * drift.
  */
 
-/** The affirmative token, in the question and in the parser both. */
-export const YES = 'YES';
-/** The negative token. Anything that is not the affirmative reads as this. */
-export const NO = 'NO';
+/** The token for a criterion that passes (SDD §4.2, D-103). */
+export const PASS = 'pass';
+/** The token for one that does not. */
+export const FAIL = 'fail';
 
 /**
- * Whether a session's answer was affirmative.
+ * What a session answered, in the three answers §4.2 allows.
  *
- * Anything that is not the affirmative token is negative, deliberately: for
- * both questions the loop asks, the affirmative is the answer that lets work
- * be skipped or a commit be made, so an unreadable answer must not be it.
+ * `unreadable` is not a third verdict about the job: it is the absence of one.
+ * The document is explicit that anything which is neither token is neither
+ * answer, and that resumption stops rather than guessing. Reading it as `fail`
+ * would redo a job that was done, and redoing a done job is how work is lost;
+ * reading it as `pass` would skip one that was not.
  */
-export function answersYes(text: string | null): boolean {
-  if (text === null) return false;
+export type AcceptanceAnswer = 'pass' | 'fail' | 'unreadable';
+
+/**
+ * Reads the last line of a reply as the answer (SDD §4.2, D-103).
+ *
+ * The comparison is case-insensitive on the token and nothing else: a reply
+ * ending in `Pass` is the same claim as one ending in `pass`, and a reply
+ * ending in `pass, mostly` is not a token at all.
+ */
+export function readAcceptanceAnswer(text: string | null): AcceptanceAnswer {
+  if (text === null) return 'unreadable';
   const last = text
     .trim()
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '')
     .pop();
-  return last === YES;
+  if (last === undefined) return 'unreadable';
+  const token = last.toLowerCase();
+  if (token === PASS) return 'pass';
+  if (token === FAIL) return 'fail';
+  return 'unreadable';
 }
 
-const ANSWER_RULE = `Answer with your reasoning if you need it, and make the LAST line of your reply exactly ${YES} or exactly ${NO}. Anything that is not ${YES} is read as ${NO}.`;
+const ANSWER_RULE = `Answer with your reasoning if you need it, and make the LAST line of your reply exactly \`${PASS}\` or exactly \`${FAIL}\`, one token and nothing else. Anything else is neither answer and stops the resumption rather than being guessed at (SDD 4.2).`;
 
 /** The PM's planning turn (SDD §4.1). */
 export function planningPrompt(): string {

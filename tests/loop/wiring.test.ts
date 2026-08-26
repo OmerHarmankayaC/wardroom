@@ -8,7 +8,7 @@ import { loadConfig } from '../../src/config/load.js';
 import { ensureRunDir, wardroomPaths } from '../../src/config/paths.js';
 import { decide, list } from '../../src/gates/queue.js';
 import { createDriverSessions } from '../../src/loop/driver-sessions.js';
-import { NO, YES } from '../../src/loop/prompts.js';
+import { FAIL, PASS } from '../../src/loop/prompts.js';
 import { runCycle } from '../../src/loop/run.js';
 import { createSessionWiring, markerOnDisk } from '../../src/loop/wiring.js';
 import { type OpenTourBlock, renderOpenTourBlock } from '../../src/progress/open-tour.js';
@@ -161,6 +161,27 @@ function wire(reply: (prompt: string, opened: Opened) => string) {
   return { opened: scripted.opened, sessions: createDriverSessions({ root, config, wiring }) };
 }
 
+/**
+ * Writes a marker and the block that agrees with it (SDD §4.4, D-104).
+ *
+ * The rows the marker says are behind it are marked done, which is what a tour
+ * that reached that boundary would have left, so the cross-check reads the two
+ * records as aligned rather than as a lag or a conflict.
+ */
+function given(overrides: Partial<StateMarker>): void {
+  const at = overrides.jobIndex ?? 0;
+  if (overrides.tourId != null) {
+    writeProgress({
+      ...block,
+      jobs: block.jobs.map((job, index) => ({
+        ...job,
+        status: index < at ? 'done' : job.status,
+      })),
+    });
+  }
+  writeMarker(root, marker(overrides));
+}
+
 function marker(overrides: Partial<StateMarker>): StateMarker {
   return {
     state: 'IDLE',
@@ -205,7 +226,7 @@ function replyRunningEverything(): (prompt: string, opened: Opened) => string {
     if (prompt.includes('Write the closing report')) return reportText();
     const asked = /job (\d+)/.exec(prompt)?.[1] ?? '';
     if (prompt.includes('Does the acceptance criterion')) {
-      return done.has(asked) ? `checked\n${YES}` : `checked\n${NO}`;
+      return done.has(asked) ? `checked\n${PASS}` : `checked\n${FAIL}`;
     }
     const worked = /^Job (\d+) of/.exec(prompt)?.[1];
     if (worked !== undefined) done.add(worked);
@@ -382,7 +403,10 @@ describe('a session the wiring built is intercepted and supplied', () => {
     const built = wiredWithoutReplies();
 
     const opened = built.sessions.executing(TOUR);
-    await opened.session.acceptancePasses(block.jobs[0] as never, 0);
+    // A job turn rather than the acceptance question: this case is about what
+    // the session was built with, and the acceptance answer has a grammar of
+    // its own that a reply of "done" does not meet (D-103).
+    await opened.session.runJob(block.jobs[0] as never, 0);
     await opened.close();
 
     expect(built.seen).not.toHaveLength(0);
@@ -400,7 +424,10 @@ describe('a session the wiring built is intercepted and supplied', () => {
     const built = wiredWithoutReplies();
 
     const opened = built.sessions.executing(TOUR);
-    await opened.session.acceptancePasses(block.jobs[0] as never, 0);
+    // A job turn rather than the acceptance question: this case is about what
+    // the session was built with, and the acceptance answer has a grammar of
+    // its own that a reply of "done" does not meet (D-103).
+    await opened.session.runJob(block.jobs[0] as never, 0);
     await opened.close();
 
     const hook = built.seen[0]?.hooks?.PreToolUse?.[0]?.hooks?.[0];
@@ -439,7 +466,10 @@ describe('a session the wiring built is intercepted and supplied', () => {
     writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
     const built = wiredWithoutReplies();
     const opened = built.sessions.executing(TOUR);
-    await opened.session.acceptancePasses(block.jobs[0] as never, 0);
+    // A job turn rather than the acceptance question: this case is about what
+    // the session was built with, and the acceptance answer has a grammar of
+    // its own that a reply of "done" does not meet (D-103).
+    await opened.session.runJob(block.jobs[0] as never, 0);
     await opened.close();
 
     // The marker is read on the hot path by the block guard and by the gate
@@ -464,5 +494,41 @@ describe('a session the wiring built is intercepted and supplied', () => {
     )) as { hookSpecificOutput?: { permissionDecision?: string } };
 
     expect(answer.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+});
+
+/**
+ * An answer the loop cannot read stops the run (SDD §4.2, D-103).
+ *
+ * The whole path, from the question the orchestrator asks to the stop the
+ * owner sees, because the two halves were written in different modules and
+ * only the run shows them meeting.
+ */
+describe('an acceptance answer with neither token stops the run', () => {
+  it('stops rather than reading prose as a verdict, and says what it was given', async () => {
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    // A session that answers the acceptance question in prose. Reading it as
+    // failing would redo a job that was done, and reading it as passing would
+    // skip one that was not.
+    const wired = wire((prompt) =>
+      prompt.includes('Does the acceptance criterion') ? 'Yes, it holds.' : 'done',
+    );
+
+    const outcome = await runCycle({ root, sessions: wired.sessions, now: NOW });
+
+    expect(outcome.kind).toBe('stopped');
+    expect(outcome.reason).toMatch(/neither/);
+    expect(outcome.reason).toContain('Yes, it holds.');
+  });
+
+  it('runs the job list where the answers carry the token', async () => {
+    // The other direction, so the case above is not passing because nothing
+    // works: the same path with the grammar met runs the tour to IDLE.
+    given({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 });
+    const wired = wire(replyRunningEverything());
+
+    const outcome = await runCycle({ root, sessions: wired.sessions, now: NOW });
+
+    expect(outcome.kind).toBe('idle');
   });
 });
