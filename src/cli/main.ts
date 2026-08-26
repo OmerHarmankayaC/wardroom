@@ -125,7 +125,11 @@ async function dispatch(
       return ok(renderGates(operations['gate.list'](root, now === undefined ? {} : { now })));
 
     case 'gate':
-      return ok(renderGate(operations['gate.show'](root, parsed.argument ?? '')));
+      return ok(
+        renderGate(
+          operations['gate.show'](root, parsed.argument ?? '', now === undefined ? {} : { now }),
+        ),
+      );
 
     case 'approve':
     case 'reject':

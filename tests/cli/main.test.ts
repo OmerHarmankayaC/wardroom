@@ -265,6 +265,26 @@ describe('exit codes (D-109)', () => {
 });
 
 describe('the commands reach their operations', () => {
+  it('tells the owner a gate is parked, the same as the listing does', async () => {
+    // The whole-tour audit's finding. `gates` parked it and `gate <id>` did
+    // not, so the two commands an owner uses together disagreed about one
+    // entry: the listing said parked and the detail said waiting.
+    writeGateEntry(root, gateEntry({ requested_at: '2026-08-21T09:30:00.000Z' }));
+    given(root, {
+      state: 'GATED',
+      tourId: 'tour-4',
+      jobIndex: 1,
+      interruptedState: 'EXECUTING',
+      gateId: GATE_ID,
+    });
+    const later = () => new Date('2026-08-23T09:30:00.000Z');
+
+    const detail = await runCli(['gate', GATE_ID], { cwd: root, query, now: later });
+
+    expect(detail.out.join('\n')).toMatch(/parked/);
+    expect(detail.out.join('\n')).toMatch(/still yours to answer/);
+  });
+
   it('shows the gate the owner asked for', async () => {
     writeGateEntry(root, gateEntry());
     given(root);

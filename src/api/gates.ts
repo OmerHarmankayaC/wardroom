@@ -46,8 +46,23 @@ export function gateList(root: string, options: GateListOptions = {}): GateEntry
   );
 }
 
-/** One gate with its full class preview (§3.1), resolved or not (D-29). */
-export function gateShow(root: string, gateId: string): GateEntry {
+export interface GateShowOptions {
+  /** The moment being read at, for the parking computation (D-107). */
+  readonly now?: Date;
+}
+
+/**
+ * One gate with its full class preview (§3.1), resolved or not (D-29).
+ *
+ * It parks for the same reason {@link gateList} does, and this was missed when
+ * D-107 was implemented: the decision names `status`, `gates` and `run`, and
+ * `gate <id>` is a fourth reader that did not exist yet. Without it the two
+ * commands an owner uses together disagree about the same entry, the listing
+ * calling it parked and the detail calling it merely pending, which is the
+ * inconsistency D-107's "identically" exists to prevent.
+ */
+export function gateShow(root: string, gateId: string, options: GateShowOptions = {}): GateEntry {
+  parkElapsedGate(root, loadConfig(root), options.now === undefined ? {} : { now: options.now });
   return show(root, gateId);
 }
 

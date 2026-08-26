@@ -372,6 +372,7 @@ export {
   DEFAULT_DECIDER,
   type DecideInput,
   type GateListOptions,
+  type GateShowOptions,
   gateDecide,
   gateList,
   gateShow,

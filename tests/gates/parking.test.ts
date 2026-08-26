@@ -1,7 +1,7 @@
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { gateList } from '../../src/api/gates.js';
+import { gateList, gateShow } from '../../src/api/gates.js';
 import { projectStatus } from '../../src/api/status.js';
 import { loadConfig } from '../../src/config/load.js';
 import { wardroomPaths } from '../../src/config/paths.js';
@@ -173,6 +173,23 @@ describe('status, gates and run park it identically (D-107)', () => {
     gateList(root, { now: ELAPSED });
 
     expect(markerOnDisk().state).toBe('PARKED');
+  });
+
+  it('parks from the detail of one gate too', () => {
+    // Found by the whole-tour audit. D-107 names status, gates and run, and
+    // `gate <id>` is a fourth reader that did not exist when it was written.
+    // Two commands an owner uses together must not disagree about one entry.
+    gateShow(root, GATE_ID, { now: ELAPSED });
+
+    expect(markerOnDisk().state).toBe('PARKED');
+  });
+
+  it('reports the same entry through the listing and through the detail', () => {
+    const listed = gateList(root, { now: ELAPSED });
+    const shown = gateShow(root, GATE_ID, { now: ELAPSED });
+
+    expect(shown).toEqual(listed[0]);
+    expect(shown.parkedAt).toBe(ELAPSED.toISOString());
   });
 
   it('reports the parked state through status once it has parked it', () => {
