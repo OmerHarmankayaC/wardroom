@@ -14,6 +14,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "wardroom": "./bin/wardroom.mjs"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,6 +24,7 @@
     }
   },
   "files": [
+    "bin",
     "dist"
   ],
   "scripts": {

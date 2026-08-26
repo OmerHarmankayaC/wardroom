@@ -391,3 +391,26 @@ export {
   takeUndelivered,
   undelivered,
 } from './state/inbox.js';
+
+/**
+ * The v1 CLI (SDD §5.2), as a library. It decides what to print; the entry
+ * point in `bin/` prints it, which is what keeps the whole surface testable
+ * without a terminal (FR-5.1).
+ */
+export {
+  COMMANDS,
+  type CommandName,
+  type ParseResult,
+  type ParsedCommand,
+  parseArgs,
+  usageLine,
+} from './cli/args.js';
+export { PROJECT_MARKER, type ProjectResolution, resolveProject } from './cli/resolve.js';
+export {
+  type CliDependencies,
+  type CliResult,
+  EXIT_FAILED,
+  EXIT_OK,
+  EXIT_STATE,
+  runCli,
+} from './cli/main.js';
