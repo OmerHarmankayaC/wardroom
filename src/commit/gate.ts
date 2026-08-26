@@ -21,8 +21,11 @@ import { type VerifyRunner, runVerification } from '../verify/run.js';
  * - **Document integrity (FR-6.1, D-16, D-30).** A canonical document in the
  *   staged set whose content differs from its baseline must also differ in
  *   version, and must carry a change-log row for that version.
- * - **The occasion (FR-7.1, D-26).** A commit is created at a job boundary or
- *   as a single WIP commit when stopping with unfinished work. Nothing else.
+ * - **The occasion (FR-7.1, D-26, D-76).** A commit is created at a job
+ *   boundary, at the closure of a tour, or as a single WIP commit when
+ *   stopping with unfinished work. Nothing else. The occasion is not passed
+ *   in: it is derived from the state marker at the moment of the call
+ *   (./occasion.ts, D-105).
  *
  * The occasion is enforced rather than instructed for the same reason FR-2.1
  * is: a rule that lives only in a role's system prompt holds until the model
@@ -31,7 +34,7 @@ import { type VerifyRunner, runVerification } from '../verify/run.js';
  */
 
 /**
- * The two occasions FR-7.1 allows. The whole list: there is no periodic
+ * The three occasions FR-7.1 allows. The whole list: there is no periodic
  * autosave commit, no per file commit, and no squash step later, because
  * squashing would rewrite history, which is the owner's operation and never
  * Wardroom's (SDD §4.5).
@@ -42,27 +45,30 @@ export type CommitOccasionKind = (typeof COMMIT_OCCASIONS)[number];
 /** How a WIP stop announces itself in the log, so a second one can be seen. */
 export const WIP_SUBJECT_PREFIX = 'WIP:';
 
+/**
+ * A job done by the whole definition of done (FR-7.1).
+ *
+ * Two fields it used to carry, and why it carries neither (D-105).
+ *
+ * `acceptancePassed` was a claim with no honest source. §4.5 says in as many
+ * words that no mechanism can observe a prose criterion, and nothing carried
+ * the session's word for it to the gate, so the orchestrator had nothing to
+ * put there: writing `true` builds a condition that can never fail, which is
+ * worse than no condition at all, because it reads as a check in the code and
+ * in the document. The criterion sits in T-6 with the audits.
+ *
+ * `verificationGreen` was the session's account of its own greenness,
+ * recorded and never consulted (D-58). It was fillable only by a caller, and
+ * since D-105 there is no caller: the occasion is derived from the marker
+ * (./occasion.ts), and a deriver would have had to invent a value for it. What
+ * the field demonstrated, that the verdict does not move with the claim, the
+ * gate now states more strongly by offering nothing to claim with, and
+ * `greenSource` still says where the answer came from.
+ */
 export interface JobBoundaryOccasion {
   readonly kind: 'job-boundary';
   readonly tourId: string;
   readonly jobIndex: number;
-  /**
-   * The job's acceptance criterion passed.
-   *
-   * This one is claimed and cannot be otherwise: an acceptance criterion is
-   * prose and nothing in a staged set reveals whether it holds. It sits beside
-   * the audit in T-6 as a condition of a boundary that no gate can observe.
-   */
-  readonly acceptancePassed: boolean;
-  /**
-   * The session's own account of its greenness. Recorded and NOT consulted
-   * (D-58): the gate runs the green definition itself, because a check that
-   * accepts its subject's word for the condition it exists to enforce is
-   * D-55's defect one level up. The field stays so that a session which claims
-   * green can be seen to have claimed it, and so a test can fabricate one and
-   * show the verdict does not move.
-   */
-  readonly verificationGreen: boolean;
 }
 
 /**
@@ -158,7 +164,7 @@ function isWipStop(occasion: CommitOccasion): occasion is WipStopOccasion {
 }
 
 /** Stated from COMMIT_OCCASIONS, so the list and the refusal cannot drift apart. */
-const EXPECTED = `Wardroom commits on ${COMMIT_OCCASIONS.length} occasions and no others: at a job boundary (${COMMIT_OCCASIONS[0]}), with the acceptance criterion passed and the work green; at the closure of a tour (${COMMIT_OCCASIONS[1]}), carrying the documents, the tour log and the cleared open-tour block; or once as a WIP commit when stopping with unfinished work (${COMMIT_OCCASIONS[2]}). FR-7.1, BACKLOG D-26, D-76`;
+const EXPECTED = `Wardroom commits on ${COMMIT_OCCASIONS.length} occasions and no others: at a job boundary (${COMMIT_OCCASIONS[0]}), with the work green; at the closure of a tour (${COMMIT_OCCASIONS[1]}), carrying the documents, the tour log and the cleared open-tour block; or once as a WIP commit when stopping with unfinished work (${COMMIT_OCCASIONS[2]}). FR-7.1, BACKLOG D-26, D-76`;
 
 /**
  * FR-7.1's second occasion is a single WIP commit on a branch other than
@@ -219,11 +225,6 @@ function checkOccasion(
   blocks: string[],
 ): CommitVerdict['greenSource'] {
   if (isJobBoundary(occasion)) {
-    if (!occasion.acceptancePassed) {
-      blocks.push(
-        `occasion: job ${occasion.jobIndex} of ${occasion.tourId} has not passed its acceptance criterion, so this is not a job boundary. ${EXPECTED}.`,
-      );
-    }
     checkGreen(root, config, runner, occasion, blocks);
     return 'run';
   }

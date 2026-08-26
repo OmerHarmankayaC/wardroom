@@ -126,6 +126,7 @@ export {
   type WipStopOccasion,
   checkCommit,
 } from './commit/gate.js';
+export { type OccasionDerivation, deriveCommitOccasion } from './commit/occasion.js';
 export {
   type BaselineRecord,
   type DocBaseline,
@@ -206,7 +207,7 @@ export { type InterceptionOutcome, isErrorOutcome, parkingDeadline } from './rol
 export { formatDuration } from './config/duration.js';
 export { GATE_BEARING_STATES } from './state/marker.js';
 export { RUN_DIR_NAME, WARDROOM_DIR_NAME } from './config/paths.js';
-export { commandSegments, isCommitCall } from './gates/classify.js';
+export { commandSegments, commitSubject, isCommitCall } from './gates/classify.js';
 export { type PermissionSupplierInput, createPermissionSupplier } from './roles/supplier.js';
 export { stagedPaths } from './state/git.js';
 export {

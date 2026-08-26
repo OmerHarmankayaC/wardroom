@@ -291,15 +291,56 @@ export function classifyToolCall(
  * `git commit-tree` is not a commit in this sense, and neither is anything
  * that merely mentions the word.
  */
+const GIT_COMMIT_SEGMENT =
+  // `git [-c k=v ...] commit`, with git's own options skipped. The word
+  // boundary matters: `git commit-tree` writes a tree object and creates no
+  // commit anyone reviews, so it is not this.
+  /^git\s+(-\S+(\s+\S+)?\s+)*commit(\s|$)/;
+
 export function isCommitCall(toolName: string, toolInput: unknown): boolean {
   if (toolName !== 'Bash') return false;
   const command = stringField(toolInput, 'command');
   if (command === null) return false;
 
-  return commandSegments(command).some((segment) =>
-    // `git [-c k=v ...] commit`, with git's own options skipped. The word
-    // boundary matters: `git commit-tree` writes a tree object and creates no
-    // commit anyone reviews, so it is not this.
-    /^git\s+(-\S+(\s+\S+)?\s+)*commit(\s|$)/.test(segment),
-  );
+  return commandSegments(command).some((segment) => GIT_COMMIT_SEGMENT.test(segment));
+}
+
+/**
+ * `-m <subject>`, in the four spellings git accepts for it. The subject is
+ * everything up to the closing quote, or the first word where the call left it
+ * unquoted, which is as far as a shell command line can be read without being
+ * a shell.
+ */
+const COMMIT_MESSAGE = /(?:^|\s)(?:-[A-Za-z]*m|--message)(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/;
+
+/**
+ * The subject line a `git commit` call asks for, or null where the call states
+ * none (SDD §4.5, D-105).
+ *
+ * It exists because one of FR-7.1's three occasions cannot be read off the
+ * state marker. `EXECUTING` with a job index is a job boundary and `CLOSING`
+ * is the closure, but no field of the marker says a tour is stopping with
+ * unfinished work, so the WIP stop announces itself the way the loop already
+ * writes it: a subject beginning with the prefix reserved for it.
+ *
+ * Recognising which occasion is being ASKED for is not taking the committer's
+ * word for whether it holds. The conditions stay observed: the branch, the
+ * single WIP rule and the staged set are all read from the repository, and a
+ * request that does not meet them is refused (§4.5).
+ *
+ * Read here rather than in the hook for the same reason {@link isCommitCall}
+ * is: one module reads command lines, and a second reader would eventually
+ * disagree with the first about what a segment is.
+ */
+export function commitSubject(toolName: string, toolInput: unknown): string | null {
+  if (toolName !== 'Bash') return null;
+  const command = stringField(toolInput, 'command');
+  if (command === null) return null;
+
+  const segment = commandSegments(command).find((candidate) => GIT_COMMIT_SEGMENT.test(candidate));
+  if (segment === undefined) return null;
+
+  const match = COMMIT_MESSAGE.exec(segment);
+  if (match === null) return null;
+  return match[1] ?? match[2] ?? match[3] ?? null;
 }

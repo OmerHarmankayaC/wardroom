@@ -1,5 +1,4 @@
 import type { Options, SDKResultMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { CommitOccasion } from '../commit/gate.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { createPreviewBuilder, roleInState } from '../gates/build-preview.js';
 import type { Notifier } from '../gates/notify.js';
@@ -183,8 +182,6 @@ export interface SessionWiringInput {
   readonly query: QueryFn;
   /** The marker as the orchestrator currently holds it (SDD §3.3, D-47). */
   readonly marker: () => StateMarker;
-  /** The occasion the commit gate is asked about at the moment of a commit. */
-  readonly commitOccasion?: () => CommitOccasion;
   readonly runVerification?: VerifyRunner;
   readonly notify?: Notifier;
   readonly now?: () => Date;
@@ -216,7 +213,6 @@ export function createSessionWiring(input: SessionWiringInput) {
       config: input.config,
       marker: input.marker,
     }),
-    ...(input.commitOccasion === undefined ? {} : { commitOccasion: input.commitOccasion }),
     ...(input.runVerification === undefined ? {} : { runVerification: input.runVerification }),
     ...(input.notify === undefined ? {} : { notify: input.notify }),
     now,

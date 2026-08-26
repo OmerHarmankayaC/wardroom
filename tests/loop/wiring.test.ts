@@ -497,6 +497,170 @@ describe('a session the wiring built is intercepted and supplied', () => {
   });
 });
 
+describe('a session the wiring built can commit, and only where it is (D-105)', () => {
+  /**
+   * The wiring, keeping the hook every session it opened was built with.
+   *
+   * The same shape as the block above, repeated rather than shared because
+   * this one needs the green definition switched under it, which the other
+   * cases must not see.
+   */
+  function wiredWithVerify(verify: readonly string[]): {
+    hook: () => NonNullable<
+      NonNullable<NonNullable<Options['hooks']>['PreToolUse']>[number]['hooks']
+    >[number];
+    sessions: ReturnType<typeof createDriverSessions>;
+  } {
+    write(
+      '.wardroom/config.json',
+      `${JSON.stringify(
+        {
+          name: 'example',
+          level: 'full',
+          doc_root: DOC_ROOT,
+          default_branch: 'main',
+          stack: { language: 'TypeScript', runtime: 'node>=18', package_manager: 'npm' },
+          verify,
+          auth_mode: 'api_key',
+          gate_wait: '24h',
+          attempt_budget: 3,
+          usage_budget: { usd: 1000 },
+          track_runtime: false,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const seen: Options[] = [];
+    const config = loadConfig(root);
+    const wiring = createSessionWiring({
+      root,
+      config,
+      marker: () => markerOnDisk(root),
+      query: (params) => {
+        seen.push(params.options as Options);
+        return (async function* (): AsyncGenerator<SDKMessage, void> {
+          if (typeof params.prompt === 'string') return;
+          for await (const _message of params.prompt) {
+            yield resultMessage({ text: 'done' });
+          }
+        })() as unknown as Query;
+      },
+    });
+    return {
+      hook: () => {
+        const installed = seen[0]?.hooks?.PreToolUse?.[0]?.hooks?.[0];
+        if (installed === undefined) throw new Error('no hook was installed on the session');
+        return installed;
+      },
+      sessions: createDriverSessions({ root, config, wiring }),
+    };
+  }
+
+  /** Opens an Implementer session the way the drive does, so the hook exists. */
+  async function openImplementer(built: ReturnType<typeof wiredWithVerify>): Promise<void> {
+    const opened = built.sessions.executing(TOUR);
+    await opened.session.runJob(block.jobs[0] as never, 0);
+    await opened.close();
+  }
+
+  async function askToCommit(
+    built: ReturnType<typeof wiredWithVerify>,
+    command: string,
+  ): Promise<{ decision?: string; why: string }> {
+    const answer = (await built.hook()(
+      {
+        session_id: 's-1',
+        transcript_path: '/dev/null',
+        cwd: root,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+        tool_use_id: 'tu-c',
+      } as never,
+      'tu-c',
+      { signal: new AbortController().signal },
+    )) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    return {
+      ...(answer.hookSpecificOutput?.permissionDecision === undefined
+        ? {}
+        : { decision: answer.hookSpecificOutput.permissionDecision }),
+      why: answer.hookSpecificOutput?.permissionDecisionReason ?? '',
+    };
+  }
+
+  function stageSomething(): void {
+    write('src/one.ts', 'export const one = 1;\n');
+    execFileSync('git', ['add', '-A'], { cwd: root });
+  }
+
+  it('lets the commit through at a job boundary', async () => {
+    // This is the case a live session could not reach: the occasion was an
+    // optional value nobody filled, so every commit was denied for want of an
+    // occasion nobody supplied (D-105). Nothing is passed in here.
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithVerify(['true']);
+    await openImplementer(built);
+    stageSomething();
+
+    const answer = await askToCommit(built, 'git commit -m "feat: job 1"');
+
+    expect(answer.decision).not.toBe('deny');
+  });
+
+  it('refuses the same commit off a boundary', async () => {
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithVerify(['true']);
+    await openImplementer(built);
+    stageSomething();
+    // The tour moves to a state that is no occasion at all, under the session
+    // that is already open.
+    writeMarker(root, marker({ state: 'VERIFYING', tourId: TOUR }));
+
+    const answer = await askToCommit(built, 'git commit -m "feat: job 1"');
+
+    expect(answer.decision).toBe('deny');
+    expect(answer.why).toMatch(/VERIFYING/);
+  });
+
+  it('refuses a boundary the green definition does not support (D-58)', async () => {
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithVerify(['false']);
+    await openImplementer(built);
+    stageSomething();
+
+    const answer = await askToCommit(built, 'git commit -m "feat: job 1, all green"');
+
+    expect(answer.decision).toBe('deny');
+    expect(answer.why).toMatch(/not green/);
+  });
+
+  it('reaches two different occasions under one session (D-99, D-105)', async () => {
+    // The green definition is red throughout, so a closure read as a boundary
+    // would be denied and the two answers below could not both hold. One
+    // session, one hook, two occasions, and the marker is the only thing that
+    // moved between them.
+    writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
+    const built = wiredWithVerify(['false']);
+    await openImplementer(built);
+    stageSomething();
+
+    const atBoundary = await askToCommit(built, 'git commit -m "feat: job 1"');
+
+    writeMarker(
+      root,
+      marker({ state: 'CLOSING', tourId: TOUR, jobIndex: null, disposition: 'closed' }),
+    );
+    const atClosure = await askToCommit(built, 'git commit -m "docs: close tour-9"');
+
+    expect(atBoundary.decision).toBe('deny');
+    expect(atBoundary.why).toMatch(/not green/);
+    expect(atClosure.decision).not.toBe('deny');
+  });
+});
+
 /**
  * An answer the loop cannot read stops the run (SDD §4.2, D-103).
  *

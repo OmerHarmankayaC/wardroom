@@ -3,11 +3,17 @@ import type {
   PreToolUseHookInput,
   SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
-import { type CommitOccasion, checkCommit } from '../commit/gate.js';
+import { checkCommit } from '../commit/gate.js';
+import { deriveCommitOccasion } from '../commit/occasion.js';
 import { type Duration, formatDuration } from '../config/duration.js';
 import { ensureRunDir } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
-import { type ToolCallClassification, classifyToolCall, isCommitCall } from '../gates/classify.js';
+import {
+  type ToolCallClassification,
+  classifyToolCall,
+  commitSubject,
+  isCommitCall,
+} from '../gates/classify.js';
 import { type Notifier, deliver, parkedNotification } from '../gates/notify.js';
 import { authorizationFor, consume, enqueue, park, show } from '../gates/queue.js';
 import type { GateEntry, GatePreview } from '../gates/schema.js';
@@ -58,17 +64,6 @@ export interface GateInterceptorInput {
    * which need the project. The orchestrator holds both.
    */
   readonly buildPreview: (classification: ToolCallClassification) => GatePreview;
-  /**
-   * The occasion the orchestrator is currently at, for the commit gate
-   * (§4.5, D-57). Read at the moment of the call rather than captured at
-   * construction: a session commits at the end of a job, and which job that is
-   * changes under the same interceptor.
-   *
-   * Absent means no occasion is known, and a commit is denied on that ground
-   * rather than allowed on it: an orchestrator that cannot say where it is has
-   * no basis for calling anything a boundary.
-   */
-  readonly commitOccasion?: () => CommitOccasion;
   /**
    * The green definition run the commit gate uses at a job boundary (§4.3,
    * D-58). Injected so the orchestrator owns the runner; omitted, the gate
@@ -213,10 +208,11 @@ function blockRefusal(reason: string): SyncHookJSONOutput {
 /**
  * The answer where the orchestrator cannot say where it is.
  *
- * The marker is read on the hook's hot path, by the block guard and by the
- * gate path both, and a read that throws would leave the hook itself throwing
- * rather than answering. Denying is the only safe answer: a gate raised
- * without the marker would name no tour and no job, and a call let through on
+ * The marker is read on the hook's hot path by all three of the commit gate,
+ * the block guard and the gate path, and a read that throws would leave the
+ * hook itself throwing rather than answering. Denying is the only safe answer:
+ * a gate raised without the marker would name no tour and no job, a commit
+ * would have no occasion to be at (§4.5, D-105), and a call let through on
  * that silence is the failure the gate exists to prevent.
  */
 function markerRefusal(error: unknown): SyncHookJSONOutput {
@@ -337,18 +333,15 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
    * `allow`, so the ordinary permission chain still sees it. The gate's job is
    * to block, and a pass is not a reason to skip the rest of the chain.
    */
-  function heldCommit(): SyncHookJSONOutput {
-    if (input.commitOccasion === undefined) {
-      return commitRefusal([
-        'occasion: the orchestrator did not say where it is, and an orchestrator that cannot name the occasion has no basis for calling this a boundary (FR-7.1).',
-      ]);
-    }
+  function heldCommit(current: StateMarker, subject: string | null): SyncHookJSONOutput {
+    const derived = deriveCommitOccasion(current, subject);
+    if (derived.kind === 'undecidable') return commitRefusal([`occasion: ${derived.reason}`]);
 
     try {
       const verdict = checkCommit(
         input.root,
         input.config,
-        { stagedPaths: stagedPaths(input.root), occasion: input.commitOccasion() },
+        { stagedPaths: stagedPaths(input.root), occasion: derived.occasion },
         input.runVerification === undefined ? {} : { runVerification: input.runVerification },
       );
       return verdict.allowed ? UNTOUCHED : commitRefusal(verdict.blocks);
@@ -372,20 +365,22 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
     if (hookInput.hook_event_name !== 'PreToolUse') return UNTOUCHED;
     const call = hookInput as PreToolUseHookInput;
 
-    // The commit gate first, because a commit is not a TD-2 class and the
-    // classifier will answer null for it. Order matters only in that both
-    // questions get asked; no call is both.
-    if (isCommitCall(call.tool_name, call.tool_input)) return heldCommit();
-
-    // The marker, once, before anything reads it. Two things below need it and
-    // reading it twice was two chances to see two different states inside one
-    // call; reading it outside a guard was a hook that throws instead of
-    // answering, which the SDK has no rule for.
+    // The marker, once, before anything reads it. Three things below need it
+    // and reading it three times was three chances to see three different
+    // states inside one call; reading it outside a guard was a hook that
+    // throws instead of answering, which the SDK has no rule for.
     let current: StateMarker;
     try {
       current = input.marker();
     } catch (error) {
       return markerRefusal(error);
+    }
+
+    // The commit gate first among the three, because a commit is not a TD-2
+    // class and the classifier will answer null for it. Order matters only in
+    // that every question gets asked; no call is two of them.
+    if (isCommitCall(call.tool_name, call.tool_input)) {
+      return heldCommit(current, commitSubject(call.tool_name, call.tool_input));
     }
 
     // Then the block guard, which is also not a TD-2 class. It is asked in

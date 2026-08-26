@@ -85,8 +85,6 @@ const boundary: JobBoundaryOccasion = {
   kind: 'job-boundary',
   tourId: 'tour-2',
   jobIndex: 6,
-  acceptancePassed: true,
-  verificationGreen: true,
 };
 
 beforeEach(() => {
@@ -519,18 +517,6 @@ describe('the occasion (FR-7.1)', () => {
     expect(checkCommit(root, config, { stagedPaths: [], occasion: boundary }).allowed).toBe(true);
   });
 
-  it('blocks a job boundary whose acceptance criterion has not passed', () => {
-    const config = withTrackedDocuments('1.3');
-
-    const verdict = checkCommit(root, config, {
-      stagedPaths: [],
-      occasion: { ...boundary, acceptancePassed: false },
-    });
-
-    expect(verdict.allowed).toBe(false);
-    expect(verdict.blocks[0]).toContain('acceptance criterion');
-  });
-
   it('blocks a job boundary that is not green', () => {
     const config = withTrackedDocuments('1.3');
 
@@ -731,17 +717,17 @@ describe('green is observed, not claimed (D-58)', () => {
     ran: ['npm run test'],
   };
 
-  function ask(claim: boolean, result: VerificationResult) {
+  function ask(result: VerificationResult) {
     return checkCommit(
       root,
       config,
-      { stagedPaths: [], occasion: { ...boundary, verificationGreen: claim } },
+      { stagedPaths: [], occasion: boundary },
       { runVerification: answering(result) },
     );
   }
 
   it('denies the commit when the definition does not pass', () => {
-    const verdict = ask(true, failed);
+    const verdict = ask(failed);
 
     expect(verdict.allowed).toBe(false);
     expect(verdict.blocks.join('\n')).toMatch(/npm run test/);
@@ -749,23 +735,28 @@ describe('green is observed, not claimed (D-58)', () => {
   });
 
   it('allows the commit when the definition passes', () => {
-    expect(ask(false, green).allowed).toBe(true);
+    expect(ask(green).allowed).toBe(true);
   });
 
-  it('answers the same way whatever the session claims', () => {
-    // The fabrication test. A committing session that reports itself green is
-    // the subject of the check reporting on the condition the check exists to
-    // enforce, which is D-55's defect one level up (FR-7.1, D-58).
-    expect(ask(true, failed)).toEqual(ask(false, failed));
-    expect(ask(true, green)).toEqual(ask(false, green));
+  it('offers a job boundary no field to claim greenness with (D-105)', () => {
+    // The fabrication test, stated as an absence since D-105. The occasion
+    // used to carry the session's own account of its greenness, recorded and
+    // never consulted, and the test fabricated one to show the verdict did not
+    // move. There is now nothing to fabricate: the request names the tour and
+    // the job and says nothing about the condition, so a committing session
+    // has no way to report on the check that exists to judge it, which is
+    // D-55's defect one level up (FR-7.1, D-58).
+    expect(Object.keys(boundary).sort()).toEqual(['jobIndex', 'kind', 'tourId']);
+    expect(ask(failed).allowed).toBe(false);
+    expect(ask(green).allowed).toBe(true);
   });
 
   it('names the run as the source, so nobody reads the denial as the claim', () => {
-    expect(ask(true, failed).greenSource).toBe('run');
+    expect(ask(failed).greenSource).toBe('run');
   });
 
   it('refuses a boundary whose project has no green definition (FR-1.5)', () => {
-    const verdict = ask(true, {
+    const verdict = ask({
       kind: 'no-definition',
       reason: 'the project contract carries no `verify` commands',
     });
@@ -815,7 +806,7 @@ describe('green is observed, not claimed (D-58)', () => {
     };
     writeMarker(root, before);
 
-    ask(true, failed);
+    ask(failed);
 
     const after = readMarker(root);
     expect(after.kind).toBe('ok');
