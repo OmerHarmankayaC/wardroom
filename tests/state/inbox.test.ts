@@ -206,3 +206,109 @@ describe('the opening prompt carries the owner words, labelled as theirs', () =>
     expect(opened.endsWith('Job 1 of tour-4')).toBe(true);
   });
 });
+
+describe('the file is never rewritten, only appended to (D-113)', () => {
+  /**
+   * Append-only, checked as bytes rather than as lines.
+   *
+   * Every earlier byte survives every later operation: that is the literal
+   * definition, and it catches a rewrite that happens to produce the same
+   * lines, which a line-by-line check would pass. The property is what makes
+   * the window harmless, and the window is the reason the design is this shape:
+   * stamping a line means rewriting the file, and an injection appended between
+   * the read and the write disappears without a trace.
+   */
+  function bytes(): string {
+    try {
+      return readFileSync(wardroomPaths(root).inboxFile, 'utf8');
+    } catch {
+      return '';
+    }
+  }
+
+  it('grows by suffix at every step of a delivery cycle', () => {
+    const seen: string[] = [bytes()];
+    const record = () => {
+      const now = bytes();
+      // Each step's content begins with the step before it. Nothing earlier
+      // moved, was rewritten, or was removed.
+      expect(now.startsWith(seen[seen.length - 1] as string)).toBe(true);
+      seen.push(now);
+    };
+
+    appendInbox(root, 'first', '2026-08-21T10:00:00.000Z');
+    record();
+    appendInbox(root, 'second', '2026-08-21T10:30:00.000Z');
+    record();
+    takeUndelivered(root, '2026-08-21T11:00:00.000Z');
+    record();
+    appendInbox(root, 'third', '2026-08-21T11:30:00.000Z');
+    record();
+    takeUndelivered(root, '2026-08-21T12:00:00.000Z');
+    record();
+
+    // And the whole sequence grew, so the check above was not passing on a
+    // file that never changed at all.
+    expect(bytes().length).toBeGreaterThan((seen[1] as string).length);
+  });
+
+  it('leaves the delivered lines byte for byte as they were written', () => {
+    appendInbox(root, 'first', '2026-08-21T10:00:00.000Z');
+    const beforeDelivery = bytes();
+
+    takeUndelivered(root, '2026-08-21T11:00:00.000Z');
+
+    // The injection line is untouched: delivery added a record beside it and
+    // did not stamp it. A stamp would be a rewrite of this exact prefix.
+    expect(bytes().startsWith(beforeDelivery)).toBe(true);
+    expect(bytes().slice(beforeDelivery.length)).toBe(
+      `${JSON.stringify({ delivered_through: 1, at: '2026-08-21T11:00:00.000Z' })}\n`,
+    );
+  });
+
+  it('delivers an injection that arrived after the count was taken, next time', () => {
+    // The window itself. The mark is a position in the file rather than a
+    // claim about what was outstanding, so a line that lands behind it waits
+    // for the next session instead of being skipped.
+    appendInbox(root, 'first', '2026-08-21T10:00:00.000Z');
+    takeUndelivered(root, '2026-08-21T11:00:00.000Z');
+    appendInbox(root, 'arrived behind the marker', '2026-08-21T11:00:00.001Z');
+
+    const next = takeUndelivered(root, '2026-08-21T12:00:00.000Z');
+
+    expect(next.map((line) => line.text)).toEqual(['arrived behind the marker']);
+  });
+
+  it('accounts for every line exactly once across two deliveries in a row', () => {
+    appendInbox(root, 'first', '2026-08-21T10:00:00.000Z');
+    appendInbox(root, 'second', '2026-08-21T10:30:00.000Z');
+    const firstRound = takeUndelivered(root, '2026-08-21T11:00:00.000Z');
+    appendInbox(root, 'third', '2026-08-21T11:30:00.000Z');
+    const secondRound = takeUndelivered(root, '2026-08-21T12:00:00.000Z');
+
+    // Exactly once each, in order, with nothing delivered twice and nothing
+    // left behind.
+    expect([...firstRound, ...secondRound].map((line) => line.text)).toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+    expect(readInbox(root).filter((line) => line.deliveredAt === null)).toEqual([]);
+    expect(readInbox(root).map((line) => line.deliveredAt)).toEqual([
+      '2026-08-21T11:00:00.000Z',
+      '2026-08-21T11:00:00.000Z',
+      '2026-08-21T12:00:00.000Z',
+    ]);
+  });
+
+  it('stores no delivered flag on any injection line, since readers derive it', () => {
+    appendInbox(root, 'first', '2026-08-21T10:00:00.000Z');
+    takeUndelivered(root, '2026-08-21T11:00:00.000Z');
+
+    const injections = lines().filter((record) => !Object.hasOwn(record, 'delivered_through'));
+
+    expect(injections).toEqual([{ text: 'first', written_at: '2026-08-21T10:00:00.000Z' }]);
+    // And the reader answers with one anyway, which is the point of deriving.
+    expect(readInbox(root)[0]?.deliveredAt).toBe('2026-08-21T11:00:00.000Z');
+  });
+});
