@@ -84,11 +84,21 @@ export function createCommit(root: string, message: string): string {
  * the index and nothing else, so no work is lost.
  */
 export function unstageAll(root: string): void {
-  // `reset` with no pathspec against HEAD, which is what a repository with no
-  // commits yet does not have; there, an empty index is already the answer.
   try {
     git(root, ['reset', '--mixed', '--quiet', 'HEAD']);
+    return;
   } catch {
+    // No HEAD: a repository whose first commit has not been made. `reset`
+    // needs a commit to reset to, so the index is emptied directly instead.
+  }
+
+  try {
     git(root, ['rm', '-r', '--cached', '--quiet', '.']);
+  } catch {
+    // Nothing was staged, which is the state this function exists to reach.
+    // `git rm` treats an empty index as an error rather than as a no-op, and
+    // it is reached exactly where the gate refused an empty staged set: the
+    // refusal would have come back as an exception, which is a caller told
+    // that Wardroom broke when what happened is that it declined.
   }
 }

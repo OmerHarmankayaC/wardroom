@@ -474,3 +474,72 @@ describe('the baseline the closure commit is checked against', () => {
     expect(attempt.blocks).toEqual([]);
   });
 });
+
+describe('a repository whose first commit has not been made yet', () => {
+  /** A fresh repository with no commits at all, which is what init leaves. */
+  function unborn(): string {
+    const at = mkdtempSync(join(tmpdir(), 'wardroom-unborn-'));
+    execFileSync('git', ['init', '-q', '-b', 'main', at], { stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: at });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: at });
+    mkdirSync(join(at, '.wardroom', 'run'), { recursive: true });
+    return at;
+  }
+
+  it('refuses an empty staged set rather than throwing (found by the tour audit)', () => {
+    // The refusal path ran `git rm -r --cached .` to undo its staging, because
+    // there is no HEAD to reset to, and `git rm` treats an empty index as an
+    // error rather than a no-op. So the one case where nothing was staged came
+    // back as an exception: a caller told Wardroom broke, when what happened
+    // is that it declined.
+    const at = unborn();
+    try {
+      writeMarker(at, marker());
+
+      const attempt = makeCommit({
+        root: at,
+        config: config(),
+        occasion: { kind: 'closure', tourId: 'tour-5', disposition: 'closed' },
+        message: 'chore(tour-5): close the tour, closed',
+        runVerification: green,
+      });
+
+      expect(attempt.committed).toBe(false);
+      expect(attempt.blocks.join('\n')).toMatch(/nothing is staged/);
+    } finally {
+      rmSync(at, { recursive: true, force: true });
+    }
+  });
+
+  it('unstages a refused set with no HEAD to reset to', () => {
+    const at = unborn();
+    try {
+      mkdirSync(join(at, DOCS), { recursive: true });
+      writeFileSync(join(at, DOCS, 'SRS.md'), srs('1.3'));
+      writeFileSync(join(at, 'README.md'), '# example\n');
+      writeMarker(at, marker({ state: 'EXECUTING', jobIndex: 2, disposition: null }));
+
+      // Refused: a WIP stop on the default branch, which is what an unborn
+      // `main` is. The staging has to come back off either way.
+      const attempt = makeCommit({
+        root: at,
+        config: config(),
+        occasion: { kind: 'wip-stop', reason: 'stopping early' },
+        message: 'WIP: stopping early',
+        runVerification: green,
+      });
+
+      expect(attempt.committed).toBe(false);
+      expect(
+        execFileSync('git', ['diff', '--cached', '--name-only'], {
+          cwd: at,
+          encoding: 'utf8',
+        }).trim(),
+      ).toBe('');
+      // And nothing was lost: the files are still there, just unstaged.
+      expect(readFileSync(join(at, DOCS, 'SRS.md'), 'utf8')).toContain('Version 1.3');
+    } finally {
+      rmSync(at, { recursive: true, force: true });
+    }
+  });
+});
