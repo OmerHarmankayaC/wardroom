@@ -29,6 +29,15 @@ export interface EnqueueRequest {
   readonly what: string;
   readonly why: string;
   readonly preview: GatePreview;
+  /**
+   * What the PM advises, where a role actually formed a view (FR-3.4, D-114).
+   *
+   * Omitted by the hook, which raises most gates mid-session with no role
+   * asked. Not defaulted to a sentence derived from the class: a
+   * recommendation restated from the gate's own rule advises nothing and reads
+   * as advice.
+   */
+  readonly recommendation?: string | null;
 }
 
 export interface QueueOptions {
@@ -97,6 +106,11 @@ export function enqueue(
   if (request.why.trim() === '') {
     throw new GateRefusedError('a gate states the rule that classified it as one.');
   }
+  if (request.recommendation !== undefined && request.recommendation?.trim() === '') {
+    throw new GateRefusedError(
+      'a gate carries a recommendation or none at all; a blank one says somebody meant to advise and did not (SDD §3.1, D-116).',
+    );
+  }
 
   const now = options.now ?? new Date();
   const entry: GateEntry = {
@@ -109,6 +123,7 @@ export function enqueue(
     what: request.what,
     why: request.why,
     preview: asPreview(request.gateClass, request.preview),
+    recommendation: request.recommendation ?? null,
     requestedAt: now.toISOString(),
     decidedAt: null,
     decidedBy: null,

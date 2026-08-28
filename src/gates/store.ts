@@ -51,6 +51,7 @@ interface OnDiskEntry {
   what: string;
   why: string;
   preview: Record<string, unknown>;
+  recommendation: string | null;
   requested_at: string;
   decided_at: string | null;
   decided_by: string | null;
@@ -79,12 +80,41 @@ function toOnDisk(entry: GateEntry): OnDiskEntry {
     what: entry.what,
     why: entry.why,
     preview,
+    recommendation: entry.recommendation,
     requested_at: entry.requestedAt,
     decided_at: entry.decidedAt,
     decided_by: entry.decidedBy,
     decision_note: entry.decisionNote,
     parked_at: entry.parkedAt,
   };
+}
+
+/**
+ * `recommendation` under D-114 and D-116, the fourth determinate emptiness.
+ *
+ * Absent is accepted, and so is null: most gates are raised by the hook inside
+ * an Implementer session where no role was asked, so having no recommendation
+ * is the ordinary case. Left uncounted, the reader D-70 tightened would have
+ * refused nearly every entry there is, which is the same defect as the empty
+ * `tour_id`, one field over and one tour later.
+ *
+ * A present-but-blank string is refused, exactly as an empty `tour_id` is.
+ * Null says nobody advised; a blank string says somebody meant to and did not,
+ * and an owner shown the first when the truth is the second is being told
+ * there was no view to have.
+ */
+function collectRecommendationProblem(raw: Record<string, unknown>, problems: string[]): void {
+  const value = raw.recommendation;
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'string') {
+    problems.push('recommendation: must be a string or null (SDD §3.1, D-114).');
+    return;
+  }
+  if (value.trim() === '') {
+    problems.push(
+      'recommendation: is empty. A gate nobody advised on carries null, which says no role was asked; an empty string says only that somebody failed to fill the field (SDD §3.1, D-32, D-70, D-116).',
+    );
+  }
 }
 
 function isOptionalString(value: unknown): value is string | null {
@@ -164,6 +194,7 @@ function collectProblems(raw: unknown, problems: string[]): void {
   for (const field of ['decided_at', 'decided_by', 'decision_note', 'parked_at']) {
     if (!isOptionalString(raw[field])) problems.push(`${field}: must be a string or null.`);
   }
+  collectRecommendationProblem(raw, problems);
 
   if (GATE_CLASSES.includes(raw.class as GateClass)) {
     const gateClass = raw.class as GateClass;
@@ -196,6 +227,10 @@ function fromOnDisk(raw: OnDiskEntry): GateEntry {
     what: raw.what,
     why: raw.why,
     preview: { ...raw.preview, kind: gateClass } as GatePreview,
+    // Absent reads as null: an entry written before this field existed, or one
+    // raised by the hook with no role to ask, and neither is a missing field
+    // (§3.1, D-116).
+    recommendation: raw.recommendation ?? null,
     requestedAt: raw.requested_at,
     decidedAt: raw.decided_at,
     decidedBy: raw.decided_by,

@@ -141,12 +141,13 @@ function consequences(entry: GateEntry): string[] {
 /**
  * One gate, as the owner decides on it (D-51, FR-3.4).
  *
- * **What is missing, and named as missing.** FR-3.4 says a gate states what
- * the PM recommends, and no field of the entry carries a recommendation
- * (§3.1). Rendering one here would mean inventing it from the class, which is
- * not a recommendation but a restatement of the rule. So the line says the
- * recommendation is absent rather than being quietly dropped, and the gap is
- * reported as a debt against the entry schema.
+ * **The recommendation is read, never derived (D-114, D-116).** FR-3.4 says a
+ * gate states what the PM recommends, and the entry now carries one. Where it
+ * carries none, this says so: most gates are raised by the hook mid-session
+ * with no role asked, and deriving advice from the gate's own class would be a
+ * restatement of the rule dressed as a view. An owner told "nothing is
+ * recorded" knows to decide for themselves; an owner told a rule back knows
+ * nothing and may think they were advised.
  */
 export function renderGate(entry: GateEntry): string[] {
   const waiting =
@@ -170,7 +171,9 @@ export function renderGate(entry: GateEntry): string[] {
     '',
     ...consequences(entry),
     '',
-    'What the PM recommends: nothing is recorded. The gate entry carries no recommendation field, so none can be shown here rather than one being invented from the gate class.',
+    entry.recommendation === null
+      ? 'What the PM recommends: nothing is recorded. No role was asked, which is the ordinary case for a gate raised mid-session, so this is yours to weigh rather than advice withheld.'
+      : `What the PM recommends: ${entry.recommendation}`,
     '',
     waiting,
     entry.status === 'pending'

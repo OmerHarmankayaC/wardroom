@@ -39,6 +39,7 @@ const entry: GateEntry = {
   interruptedState: 'EXECUTING',
   what: 'Push three commits to origin/main',
   why: 'TD-2 classifies git push as a critical action',
+  recommendation: null,
   preview: {
     kind: 'push',
     commits: [{ hash: 'c26560c', subject: 'style: remove dash separators' }],
@@ -96,6 +97,7 @@ describe('writeEntry and readEntry', () => {
         'job_index',
         'parked_at',
         'preview',
+        'recommendation',
         'requested_at',
         'status',
         'tour_id',

@@ -90,6 +90,7 @@ describe('enqueue', () => {
       what: 'Push three commits to origin/main',
       why: 'TD-2 classifies git push as a critical action',
       preview: pushRequest.preview,
+      recommendation: null,
       requestedAt: '2026-08-20T13:15:00.000Z',
       decidedAt: null,
       decidedBy: null,

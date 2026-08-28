@@ -165,6 +165,23 @@ export interface GateEntry {
   /** The rule or condition that classified it as a gate. */
   readonly why: string;
   readonly preview: GatePreview;
+  /**
+   * What the PM advises and why, in one or two lines, or null (FR-3.4, D-114,
+   * D-116).
+   *
+   * Optional, and null is the ordinary case rather than a missing field: most
+   * gates are raised by the `PreToolUse` hook inside an Implementer session,
+   * where no role was asked for a view. FR-3.4 asks a gate to say what the PM
+   * recommends and no field carried one at all, so a surface either invented
+   * advice from the gate's own rule, which advises nothing and reads as
+   * advice, or dropped the requirement silently.
+   *
+   * Null, never an empty string, for the reason `tourId` is: null is a
+   * determinate fact about the gate, that nobody advised on it, and an empty
+   * string is a field somebody failed to fill. The reader has to tell them
+   * apart to refuse the second (§3.1, D-32, D-70).
+   */
+  readonly recommendation: string | null;
   readonly requestedAt: string;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
