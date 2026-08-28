@@ -1,4 +1,5 @@
 import type { ClosureOccasion } from '../commit/gate.js';
+import { type CommitAttempt, makeCommit } from '../commit/make.js';
 import { loadConfig } from '../config/load.js';
 import type { ProjectConfig } from '../config/schema.js';
 import type { Notifier } from '../gates/notify.js';
@@ -42,11 +43,31 @@ export interface RunInput {
   readonly notify?: Notifier;
   /** The green definition run. Absent, the project's own commands are run for real. */
   readonly runVerification?: VerifyRunner;
-  /** Makes the single WIP commit a stop condition ends with (FR-7.1). */
-  readonly commitWip?: (stop: WipStop) => Promise<void> | void;
-  /** Makes the one commit a closure ends with (§4.6 step 7, D-76). */
-  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<void> | void;
+  /**
+   * Makes the single WIP commit a stop condition ends with (FR-7.1, D-112).
+   *
+   * Overridable, and defaulted rather than required: the orchestrator makes
+   * this commit through the gate (../commit/make.ts), which is what D-112
+   * settled. A test supplies its own to watch what was asked for; a live run
+   * supplies nothing and gets the real one.
+   */
+  readonly commitWip?: (stop: WipStop) => Promise<CommitAttempt> | CommitAttempt;
+  /** Makes the one commit a closure ends with (§4.6 step 7, D-76, D-112). */
+  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<CommitAttempt> | CommitAttempt;
   readonly now?: () => Date;
+}
+
+/**
+ * What the closure commit says it is (§4.6 step 7).
+ *
+ * The disposition is in the subject because it is the one fact about a closure
+ * that a reader of the log cannot recover any other way: a tour that was
+ * abandoned and one that closed green produce the same shape of commit, and
+ * the tour log that tells them apart is inside the commit rather than in front
+ * of it.
+ */
+function closureCommitMessage(occasion: ClosureOccasion): string {
+  return `chore(${occasion.tourId}): close the tour, ${occasion.disposition}`;
 }
 
 /**
@@ -74,11 +95,37 @@ export async function projectRun(root: string, input: RunInput): Promise<RunOutc
     ...(input.now === undefined ? {} : { now: input.now }),
   });
 
+  // The orchestrator's two commits (D-112). Before this they had no caller at
+  // all: the gate was described only as a hook, so nothing filled this side,
+  // and `wardroom run` closed a tour without committing its documents. Both go
+  // through the same gate the hook uses, and each names its occasion, which
+  // the gate checks against the marker (D-115).
+  const verify =
+    input.runVerification === undefined ? {} : { runVerification: input.runVerification };
+
   return await runCycle({
     root,
     sessions: createDriverSessions({ root, config, wiring }),
-    ...(input.commitWip === undefined ? {} : { commitWip: input.commitWip }),
-    ...(input.commitClosure === undefined ? {} : { commitClosure: input.commitClosure }),
+    commitWip:
+      input.commitWip ??
+      ((stop) =>
+        makeCommit({
+          root,
+          config,
+          occasion: { kind: 'wip-stop', reason: stop.reason },
+          message: stop.message,
+          ...verify,
+        })),
+    commitClosure:
+      input.commitClosure ??
+      ((occasion) =>
+        makeCommit({
+          root,
+          config,
+          occasion,
+          message: closureCommitMessage(occasion),
+          ...verify,
+        })),
     ...(input.now === undefined ? {} : { now: input.now }),
   });
 }

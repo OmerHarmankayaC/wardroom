@@ -287,6 +287,7 @@ describe('one run invocation carries a tour from IDLE to IDLE', () => {
         expect(stagedPaths(root).some((path) => path.endsWith('PROGRESS.md'))).toBe(true);
         closures.push(occasion.tourId);
         commitAll(`close ${occasion.tourId}`);
+        return { committed: true, hash: null, blocks: [] };
       },
       now: NOW,
     });
@@ -317,7 +318,12 @@ describe('one run invocation carries a tour from IDLE to IDLE', () => {
   });
 
   it('meters the tour it ran, by role and by the state that owned each line', async () => {
-    await runCycle({ root, sessions: wire().sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wire().sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     const lines = readUsage(root);
     const states = new Set(lines.map((line) => line.state));
@@ -341,7 +347,7 @@ describe('one run invocation carries a tour from IDLE to IDLE', () => {
     await runCycle({
       root,
       sessions: wired.sessions,
-      commitClosure: () => undefined,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
       now: NOW,
     });
 
@@ -353,7 +359,12 @@ describe('one run invocation carries a tour from IDLE to IDLE', () => {
   it('does not open a second tour after reaching IDLE', async () => {
     const wired = wire();
 
-    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wired.sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     // One planning turn, for this cycle. Continuing would spend the next
     // tour's budget before the owner had seen this one close (D-83).
@@ -383,7 +394,7 @@ describe('a tour whose report never arrived closes all the same (D-98)', () => {
     const outcome = await runCycle({
       root,
       sessions: wire().sessions,
-      commitClosure: () => undefined,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
       now: NOW,
     });
 
@@ -421,7 +432,7 @@ describe('a tour whose report never arrived closes all the same (D-98)', () => {
     const outcome = await runCycle({
       root,
       sessions: wire().sessions,
-      commitClosure: () => undefined,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
       now: NOW,
     });
 

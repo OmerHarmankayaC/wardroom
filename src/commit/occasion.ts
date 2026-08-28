@@ -1,11 +1,11 @@
 import type { StateMarker } from '../state/marker.js';
-import {
-  type ClosureOccasion,
-  type CommitOccasion,
-  type JobBoundaryOccasion,
-  WIP_SUBJECT_PREFIX,
-  type WipStopOccasion,
+import type {
+  ClosureOccasion,
+  CommitOccasion,
+  JobBoundaryOccasion,
+  WipStopOccasion,
 } from './gate.js';
+import { WIP_SUBJECT_PREFIX } from './kinds.js';
 
 /**
  * Where the commit gate's occasion comes from (SDD §4.5, D-105).
@@ -40,6 +40,21 @@ export type OccasionDerivation =
 const RULE = `A commit is created at a job boundary, which is EXECUTING carrying a job index; at the closure of a tour, which is CLOSING; or once as a WIP commit when stopping with unfinished work, which announces itself with a subject beginning ${JSON.stringify(WIP_SUBJECT_PREFIX)} (FR-7.1, SDD §4.5, BACKLOG D-105)`;
 
 /**
+ * A WIP stop announcing itself in the subject, or null (D-110).
+ *
+ * Its own function because two callers ask exactly this question and neither
+ * may ask it differently: the derivation below, and the gate, which answers a
+ * WIP stop without reading the marker at all. The marker cannot confirm one,
+ * and refusing the commit that saves unfinished work for want of a record
+ * would discard work at the moment things have already gone wrong.
+ */
+export function wipStopFromSubject(subject: string | null): WipStopOccasion | null {
+  const trimmed = subject?.trimStart();
+  if (trimmed === undefined || !trimmed.startsWith(WIP_SUBJECT_PREFIX)) return null;
+  return { kind: 'wip-stop', reason: trimmed.slice(WIP_SUBJECT_PREFIX.length).trim() };
+}
+
+/**
  * The occasion this commit is being made on.
  *
  * Three occasions and two sources. Two of them are read off the marker, which
@@ -66,13 +81,8 @@ export function deriveCommitOccasion(
   marker: StateMarker,
   subject: string | null,
 ): OccasionDerivation {
-  if (subject?.trimStart().startsWith(WIP_SUBJECT_PREFIX) === true) {
-    const occasion: WipStopOccasion = {
-      kind: 'wip-stop',
-      reason: subject.trimStart().slice(WIP_SUBJECT_PREFIX.length).trim(),
-    };
-    return { kind: 'derived', occasion };
-  }
+  const wip = wipStopFromSubject(subject);
+  if (wip !== null) return { kind: 'derived', occasion: wip };
 
   if (marker.state === 'EXECUTING') {
     if (marker.jobIndex === null) {
@@ -116,7 +126,6 @@ export function deriveCommitOccasion(
     const occasion: ClosureOccasion = {
       kind: 'closure',
       tourId: marker.tourId,
-      state: marker.state,
       disposition: marker.disposition,
     };
     return { kind: 'derived', occasion };

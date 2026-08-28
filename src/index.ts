@@ -37,7 +37,7 @@ export {
   fileAtHead,
   headCommit,
   headSubject,
-  isPathTracked,
+  isPathCommitted,
   isWorkingTreeDirty,
   workingTreeChanges,
 } from './state/git.js';
@@ -126,7 +126,18 @@ export {
   type WipStopOccasion,
   checkCommit,
 } from './commit/gate.js';
-export { type OccasionDerivation, deriveCommitOccasion } from './commit/occasion.js';
+export {
+  type OccasionDerivation,
+  deriveCommitOccasion,
+  wipStopFromSubject,
+} from './commit/occasion.js';
+/**
+ * The gate's second caller: the two commits the orchestrator makes itself
+ * (SDD §4.5, D-112). The hook covers the commits sessions make; these two have
+ * no session behind them.
+ */
+export { type CommitAttempt, type MakeCommitInput, makeCommit } from './commit/make.js';
+export { createCommit, stageAll, unstageAll } from './commit/repository.js';
 export {
   type BaselineRecord,
   type DocBaseline,

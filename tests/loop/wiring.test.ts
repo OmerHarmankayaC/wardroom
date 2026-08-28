@@ -536,7 +536,12 @@ describe("the owner's injected context reaches the next session (FR-5.2, D-108)"
     writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
     const wired = wire(replyRunningEverything());
 
-    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wired.sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     const implementer = wired.opened.find((session) => session.role === 'implementer');
     expect(implementer?.turns[0]).toMatch(/the pilot repository moved to a new host/);
@@ -558,7 +563,12 @@ describe("the owner's injected context reaches the next session (FR-5.2, D-108)"
       return jobs(prompt, opened);
     });
 
-    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wired.sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     const pm = wired.opened.find((session) => session.role === 'pm');
     expect(pm?.turns[0]).toMatch(/the pilot repository moved to a new host/);
@@ -569,7 +579,12 @@ describe("the owner's injected context reaches the next session (FR-5.2, D-108)"
     writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
     const wired = wire(replyRunningEverything());
 
-    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wired.sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     expect(marks()).toHaveLength(1);
     expect(marks()[0]?.delivered_through).toBe(1);
@@ -589,7 +604,12 @@ describe("the owner's injected context reaches the next session (FR-5.2, D-108)"
     writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
     const wired = wire(replyRunningEverything());
 
-    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wired.sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     const implementer = wired.opened.find((session) => session.role === 'implementer');
     expect(implementer?.turns.slice(1).filter((turn) => turn.includes('a note'))).toEqual([]);
@@ -627,7 +647,12 @@ describe("the owner's injected context reaches the next session (FR-5.2, D-108)"
     writeMarker(root, marker({ state: 'EXECUTING', tourId: TOUR, jobIndex: 0 }));
     const wired = wire(replyRunningEverything());
 
-    await runCycle({ root, sessions: wired.sessions, commitClosure: () => undefined, now: NOW });
+    await runCycle({
+      root,
+      sessions: wired.sessions,
+      commitClosure: () => ({ committed: true, hash: null, blocks: [] }),
+      now: NOW,
+    });
 
     const implementer = wired.opened.find((session) => session.role === 'implementer');
     // No preamble at all, and no record of a delivery that did not happen: a

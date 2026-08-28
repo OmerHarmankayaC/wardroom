@@ -114,15 +114,26 @@ export function isWorkingTreeDirty(root: string): boolean {
 }
 
 /**
- * Whether git tracks anything at this path. A directory answers for its
- * contents, which is how the commit gate learns whether the document root is
- * tracked and therefore whether git can supply a baseline at all
- * (SDD §4.5, BACKLOG D-30).
+ * Whether `HEAD` carries anything at this path. A directory answers for its
+ * contents, which is how the commit gate learns whether git can supply a
+ * baseline at all (SDD §4.5, BACKLOG D-30).
+ *
+ * `HEAD` and not the index, which is the correction this is. The question both
+ * callers ask is whether git holds a *baseline* for the document root, and the
+ * only baseline git holds is the last commit: the index is the thing being
+ * checked, not something to check it against.
+ *
+ * Asking `ls-files` read the index, and the orchestrator stages before the
+ * gate runs (../commit/make.ts), so a document root git had never committed
+ * answered "tracked" the moment it was staged. The gate then looked for a
+ * baseline at `HEAD`, found none, read that as a new document with nothing to
+ * compare against, and allowed an unbumped change through: a silent pass in
+ * FR-6.1, for exactly the untracked root D-30 wrote `doc-baseline.json` for.
  */
-export function isPathTracked(root: string, path: string): boolean {
+export function isPathCommitted(root: string, path: string): boolean {
   assertRepository(root);
   try {
-    return git(root, ['ls-files', '--', path]).trim() !== '';
+    return git(root, ['ls-tree', '-r', '--name-only', 'HEAD', '--', path]).trim() !== '';
   } catch {
     return false;
   }

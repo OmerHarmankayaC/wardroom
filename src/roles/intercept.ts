@@ -4,7 +4,6 @@ import type {
   SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { checkCommit } from '../commit/gate.js';
-import { deriveCommitOccasion } from '../commit/occasion.js';
 import { formatDuration } from '../config/duration.js';
 import { ensureRunDir } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
@@ -324,15 +323,25 @@ export function createGateInterceptor(input: GateInterceptorInput): GateIntercep
    * to block, and a pass is not a reason to skip the rest of the chain.
    */
   function heldCommit(current: StateMarker, subject: string | null): SyncHookJSONOutput {
-    const derived = deriveCommitOccasion(current, subject);
-    if (derived.kind === 'undecidable') return commitRefusal([`occasion: ${derived.reason}`]);
-
     try {
+      // Names nothing (D-105, D-115). A session does not get to say which
+      // occasion it is at: the gate reads the marker, which the orchestrator
+      // alone writes (D-47), and derives it there. The subject travels because
+      // the marker cannot express a stop condition and the WIP prefix is what
+      // announces one (D-110).
       const verdict = checkCommit(
         input.root,
         input.config,
-        { stagedPaths: stagedPaths(input.root), occasion: derived.occasion },
-        input.runVerification === undefined ? {} : { runVerification: input.runVerification },
+        { stagedPaths: stagedPaths(input.root), subject },
+        {
+          // The marker this call already read, not a second read of it: three
+          // things in one hook call need it, and reading it three times was
+          // three chances to see three different states.
+          marker: current,
+          ...(input.runVerification === undefined
+            ? {}
+            : { runVerification: input.runVerification }),
+        },
       );
       return verdict.allowed ? UNTOUCHED : commitRefusal(verdict.blocks);
     } catch (error) {

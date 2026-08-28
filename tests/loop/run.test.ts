@@ -621,6 +621,7 @@ describe('a stop condition ends with a WIP commit', () => {
       sessions: { ...doubles.sessions, executing: () => stuckImplementer() },
       commitWip: async (stop: { message: string }) => {
         wip.push(stop.message);
+        return { committed: true, hash: null, blocks: [] };
       },
       now: NOW,
     });
@@ -637,7 +638,7 @@ describe('a stop condition ends with a WIP commit', () => {
     const outcome = await runCycle({
       root,
       sessions: { ...doubles.sessions, executing: () => stuckImplementer() },
-      commitWip: async () => undefined,
+      commitWip: async () => ({ committed: true, hash: null, blocks: [] }),
       now: NOW,
     });
 

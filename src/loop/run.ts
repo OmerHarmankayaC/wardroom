@@ -1,4 +1,5 @@
 import { type ClosureOccasion, WIP_SUBJECT_PREFIX } from '../commit/gate.js';
+import type { CommitAttempt } from '../commit/make.js';
 import { loadConfig } from '../config/load.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { dirtyTreeGateRequest } from '../gates/dirty-tree.js';
@@ -78,7 +79,7 @@ export interface RunCycleInput {
    * occasion). Absent, the stop still happens and reports that no commit was
    * made, rather than reporting a commit that did not happen.
    */
-  readonly commitWip?: (stop: WipStop) => Promise<void> | void;
+  readonly commitWip?: (stop: WipStop) => Promise<CommitAttempt> | CommitAttempt;
   /**
    * Makes the one commit a closure ends with (§4.6 step 7, D-76).
    *
@@ -86,7 +87,7 @@ export interface RunCycleInput {
    * the block is cleared before it and the baseline refreshed after it (D-77).
    * Absent, the tour still closes and reports that no commit was asked for.
    */
-  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<void> | void;
+  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<CommitAttempt> | CommitAttempt;
   readonly now?: () => Date;
 }
 
@@ -219,16 +220,29 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
 
   const stopWith = async (reason: string, error: Error | null): Promise<RunOutcome> => {
     const changes = workingTreeChanges(root);
-    let wipRequested = false;
-    if (input.commitWip !== undefined) {
-      await input.commitWip({
-        reason,
-        message: `${WIP_SUBJECT_PREFIX} ${reason}`,
-        changes,
-      });
-      wipRequested = true;
-    }
-    return outcome({ kind: 'stopped', marker, visited, reason, error, wipRequested });
+    const attempt = await input.commitWip?.({
+      reason,
+      message: `${WIP_SUBJECT_PREFIX} ${reason}`,
+      changes,
+    });
+    // Made, not merely asked for. The gate can refuse this commit, most often
+    // because FR-7.1 puts unfinished work on a branch and the tour is on
+    // `default_branch` (D-33), and an outcome that reported the request as the
+    // act would tell the owner their work was committed when it is sitting in
+    // the working tree.
+    const wipRequested = attempt?.committed === true;
+    const wipBlocks = attempt?.blocks ?? [];
+    return outcome({
+      kind: 'stopped',
+      marker,
+      visited,
+      reason:
+        wipBlocks.length === 0
+          ? reason
+          : `${reason}\n  The WIP commit was refused:\n  - ${wipBlocks.join('\n  - ')}`,
+      error,
+      wipRequested,
+    });
   };
 
   for (let step = 0; ; step += 1) {

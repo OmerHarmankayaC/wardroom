@@ -509,6 +509,7 @@ describe('the closure writes what a later reader needs (§4.6 steps 4 to 7)', ()
         // because refreshing first would compare the new documents against
         // themselves and pass every closure commit unconditionally.
         order.push(readDocBaseline(root) === null ? 'no baseline yet' : 'baseline already there');
+        return { committed: true, hash: null, blocks: [] };
       },
     });
 
@@ -566,15 +567,17 @@ describe('the closure commit is one commit, at its own occasion (D-76)', () => {
     expect(result.commitOccasion).toEqual({
       kind: 'closure',
       tourId: 'tour-9',
-      state: 'CLOSING',
       disposition: 'closed',
     });
   });
 
-  it('names CLOSING as the state, so the gate can refuse it anywhere else', async () => {
+  it('names no state, because the marker is what says where the tour is (D-115)', async () => {
+    // The occasion used to carry the orchestrator's state as a field, which
+    // was the caller's claim about a fact the marker owns: a claim that could
+    // refuse a commit the marker permits. The gate reads the marker instead.
     const result = await close();
 
-    expect(result.commitOccasion?.state).toBe('CLOSING');
+    expect(result.commitOccasion).not.toHaveProperty('state');
   });
 
   it('creates no commit itself, because the gate is what decides that', async () => {

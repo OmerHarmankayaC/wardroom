@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { wardroomPaths } from '../config/paths.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { atomicWriteFile } from '../fs/atomic.js';
-import { isPathTracked } from '../state/git.js';
+import { isPathCommitted } from '../state/git.js';
 import { documentHash, documentVersion, versionCarryingDocuments } from './set.js';
 
 /**
@@ -89,7 +89,7 @@ export function recordClosureBaseline(
   root: string,
   config: ProjectConfig,
 ): { readonly written: boolean; readonly baseline: DocBaseline | null } {
-  if (isPathTracked(root, config.docRoot)) {
+  if (isPathCommitted(root, config.docRoot)) {
     return { written: false, baseline: null };
   }
   const baseline = buildDocBaseline(root, config);

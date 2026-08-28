@@ -8,9 +8,16 @@ import {
   hasChangeLogRow,
   versionCarryingDocuments,
 } from '../documents/set.js';
-import { currentBranch, fileAtHead, headSubject, isPathTracked } from '../state/git.js';
-import { TOUR_DISPOSITIONS, type TourDisposition, type TourState } from '../state/marker.js';
+import { currentBranch, fileAtHead, headSubject, isPathCommitted } from '../state/git.js';
+import {
+  type StateMarker,
+  TOUR_DISPOSITIONS,
+  type TourDisposition,
+  readMarker,
+} from '../state/marker.js';
 import { type VerifyRunner, runVerification } from '../verify/run.js';
+import { COMMIT_OCCASIONS, WIP_SUBJECT_PREFIX } from './kinds.js';
+import { deriveCommitOccasion, wipStopFromSubject } from './occasion.js';
 
 /**
  * The commit gate (SDD §4.5). Every commit Wardroom makes passes it first.
@@ -23,9 +30,24 @@ import { type VerifyRunner, runVerification } from '../verify/run.js';
  *   version, and must carry a change-log row for that version.
  * - **The occasion (FR-7.1, D-26, D-76).** A commit is created at a job
  *   boundary, at the closure of a tour, or as a single WIP commit when
- *   stopping with unfinished work. Nothing else. The occasion is not passed
- *   in: it is derived from the state marker at the moment of the call
- *   (./occasion.ts, D-105).
+ *   stopping with unfinished work. Nothing else.
+ *
+ * **The occasion is verified, whoever names it (D-115).** D-105 said the
+ * occasion is derived and never injected, and that could not survive the
+ * gate's second caller: the orchestrator makes two of the three commits
+ * itself (D-112), so it is the caller, and a caller naming nothing would leave
+ * the gate deriving an occasion for a commit whose occasion the caller already
+ * knows. The rule that holds for both callers is verification rather than
+ * derivation. The hook names nothing and the gate derives from the marker,
+ * which is D-105 unchanged for the path D-105 was about; the orchestrator
+ * names its occasion and the gate checks it against the marker, refusing where
+ * the two disagree.
+ *
+ * The WIP stop is the exception in both directions and the marker cannot
+ * confirm it (D-110): nothing in the marker changes when a stop condition ends
+ * a tour, so a tour stopping and a tour at a job boundary read identically
+ * there. What the gate can still check it checks from the repository rather
+ * than from the caller: the branch and the single-WIP rule.
  *
  * The occasion is enforced rather than instructed for the same reason FR-2.1
  * is: a rule that lives only in a role's system prompt holds until the model
@@ -33,17 +55,11 @@ import { type VerifyRunner, runVerification } from '../verify/run.js';
  * rule an agent talks itself out of one checkpoint at a time.
  */
 
-/**
- * The three occasions FR-7.1 allows. The whole list: there is no periodic
- * autosave commit, no per file commit, and no squash step later, because
- * squashing would rewrite history, which is the owner's operation and never
- * Wardroom's (SDD §4.5).
- */
-export const COMMIT_OCCASIONS = ['job-boundary', 'closure', 'wip-stop'] as const;
-export type CommitOccasionKind = (typeof COMMIT_OCCASIONS)[number];
-
-/** How a WIP stop announces itself in the log, so a second one can be seen. */
-export const WIP_SUBJECT_PREFIX = 'WIP:';
+// Re-exported from ./kinds.ts, which exists so that this module and its
+// derivation do not import each other at runtime. This is where a reader looks
+// for them, and the split is a fact about module loading rather than a second
+// home for either.
+export { COMMIT_OCCASIONS, type CommitOccasionKind, WIP_SUBJECT_PREFIX } from './kinds.js';
 
 /**
  * A job done by the whole definition of done (FR-7.1).
@@ -83,13 +99,6 @@ export interface JobBoundaryOccasion {
 export interface ClosureOccasion {
   readonly kind: 'closure';
   readonly tourId: string;
-  /**
-   * The state the orchestrator is in. The gate accepts this occasion only in
-   * `CLOSING`: a closure commit from anywhere else is a tour committing its
-   * documents without having gone through the procedure that settles them
-   * (§4.6).
-   */
-  readonly state: TourState;
   /** Closed, abandoned (D-35) or carried (D-66). Three and no more (§3.2). */
   readonly disposition: TourDisposition;
 }
@@ -114,7 +123,25 @@ export type CommitOccasion =
 export interface CommitRequest {
   /** Repository-relative paths in the staged set. */
   readonly stagedPaths: readonly string[];
-  readonly occasion: CommitOccasion;
+  /**
+   * The occasion the caller says it is committing at, or absent to let the
+   * gate derive one (D-115).
+   *
+   * Absent is the hook's path: a session names nothing and the marker answers
+   * (D-105). Present is the orchestrator's: it made the decision to close a
+   * tour or to stop with unfinished work, so it says which, and the gate
+   * checks the claim rather than taking it.
+   */
+  readonly occasion?: CommitOccasion;
+  /**
+   * The subject of the commit being requested, where one is known.
+   *
+   * The WIP stop is recognised from it (D-110), because no field of the marker
+   * changes when a stop condition ends a tour. Null where the caller has no
+   * subject to offer, which reads as "not a WIP stop" and never as "unknown":
+   * a commit that does not announce itself as a stop is not one.
+   */
+  readonly subject?: string | null;
 }
 
 export interface CommitGateOptions {
@@ -124,6 +151,18 @@ export interface CommitGateOptions {
    * observation is optional is a gate back to accepting the claim.
    */
   readonly runVerification?: VerifyRunner;
+  /**
+   * The marker to check the occasion against, where the caller already holds
+   * one. Absent, the gate reads it from disk.
+   *
+   * Not a loophole in D-115. What that rule forbids is the occasion coming
+   * from the committer, and no session ever calls this function: both callers
+   * are orchestrator code, and the marker has one writer (D-47). What it buys
+   * is the hook's own invariant, which is that the marker is read once at the
+   * top of a call so that three decisions inside it cannot see three different
+   * states. A gate that re-read would put that back.
+   */
+  readonly marker?: StateMarker;
 }
 
 export interface CommitVerdict {
@@ -234,11 +273,13 @@ function checkOccasion(
     // abandoned closure is the closure of a tour that could not go green
     // (D-35), so requiring it here would forbid the closure that disposition
     // exists for.
-    if (occasion.state !== 'CLOSING') {
-      blocks.push(
-        `occasion: a closure commit is created in CLOSING, and the orchestrator is in ${occasion.state}. A tour committing its documents from anywhere else has not been through the procedure that settles them (SDD §4.6, D-76).`,
-      );
-    }
+    //
+    // That the orchestrator is in CLOSING is not checked here: this occasion
+    // only exists because the marker said so, either by derivation or by
+    // agreeing with what the caller named (D-115). The field the occasion used
+    // to carry for it was the caller's claim about the orchestrator's own
+    // state, and a claim that could refuse a commit the marker permits is a
+    // second home for a fact the marker owns.
     if (!TOUR_DISPOSITIONS.includes(occasion.disposition)) {
       blocks.push(
         `occasion: ${JSON.stringify(occasion.disposition)} is not a disposition. A closure records one of ${TOUR_DISPOSITIONS.join(', ')} and no more (SDD §3.2, D-35, D-66).`,
@@ -304,7 +345,7 @@ function checkDocuments(
 
   if (documents.length === 0) return 'none';
 
-  const tracked = isPathTracked(root, config.docRoot);
+  const tracked = isPathCommitted(root, config.docRoot);
   const recorded = tracked ? null : readDocBaseline(root);
 
   for (const { name, path } of documents) {
@@ -366,6 +407,118 @@ function checkDocuments(
 }
 
 /**
+ * How one occasion differs from another, in the fields the marker can settle.
+ *
+ * Compared field by field rather than by deep equality, so the message names
+ * what disagreed. A caller told only that two records differ reads both and
+ * guesses; a caller told which field differs has the answer.
+ */
+function occasionDisagreement(named: CommitOccasion, derived: CommitOccasion): string | null {
+  if (named.kind !== derived.kind) {
+    return `the caller named ${JSON.stringify(named.kind)} and the marker says ${JSON.stringify(derived.kind)}`;
+  }
+  if (isJobBoundary(named) && isJobBoundary(derived)) {
+    if (named.tourId !== derived.tourId) {
+      return `the caller named tour ${JSON.stringify(named.tourId)} and the marker carries ${JSON.stringify(derived.tourId)}`;
+    }
+    if (named.jobIndex !== derived.jobIndex) {
+      return `the caller named job ${named.jobIndex} and the marker carries job ${derived.jobIndex}`;
+    }
+  }
+  if (isClosure(named) && isClosure(derived)) {
+    if (named.tourId !== derived.tourId) {
+      return `the caller named tour ${JSON.stringify(named.tourId)} and the marker carries ${JSON.stringify(derived.tourId)}`;
+    }
+    if (named.disposition !== derived.disposition) {
+      return `the caller named the disposition ${JSON.stringify(named.disposition)} and the marker carries ${JSON.stringify(derived.disposition)}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The occasion this commit is actually being made on (D-105, D-115).
+ *
+ * The marker is read here rather than taken from the caller, because the whole
+ * point is that the caller's claim is checked against something it does not
+ * supply. A marker that cannot be read refuses the commit: a check that could
+ * not run reported nothing, and a commit created on that silence is exactly
+ * the history FR-7.1 exists to keep bisectable.
+ */
+function resolveOccasion(
+  root: string,
+  request: CommitRequest,
+  supplied: StateMarker | undefined,
+  blocks: string[],
+): CommitOccasion | null {
+  const named = request.occasion;
+
+  // The WIP stop, before anything reads the marker. It is the one occasion the
+  // marker cannot confirm (D-110), so the marker cannot refuse it either:
+  // declining the commit that saves unfinished work because the record of
+  // where we are is unreadable would discard work at exactly the moment things
+  // have already gone wrong. What can still be checked is checked below in
+  // `checkOccasion`, from `.git` rather than from the caller.
+  if (named !== undefined && isWipStop(named)) return named;
+  if (named === undefined) {
+    const announced = wipStopFromSubject(request.subject ?? null);
+    if (announced !== null) return announced;
+  }
+
+  // A kind that is not an occasion at all is a different fact from a caller at
+  // the wrong moment, and the list is what a caller needs back.
+  if (named !== undefined && !(COMMIT_OCCASIONS as readonly string[]).includes(named.kind)) {
+    blocks.push(
+      `occasion: ${JSON.stringify(named.kind)} is not an occasion to commit on. ${EXPECTED}.`,
+    );
+    return null;
+  }
+
+  let marker: StateMarker;
+  if (supplied === undefined) {
+    const read = readMarker(root);
+    if (read.kind !== 'ok') {
+      blocks.push(
+        `occasion: the state marker is ${read.kind}, so nothing can say which occasion this commit is at (SDD §4.4 step 1, D-20).`,
+      );
+      return null;
+    }
+    marker = read.marker;
+  } else {
+    marker = supplied;
+  }
+
+  const derived = deriveCommitOccasion(marker, request.subject ?? null);
+
+  if (named === undefined) {
+    // The hook's path: the session names nothing and the marker answers
+    // (D-105). An undecidable marker is a commit asked for from a state that
+    // names no moment at all, which is a different fact from a commit asked
+    // for at the wrong moment, and the reason says which.
+    if (derived.kind === 'undecidable') {
+      blocks.push(`occasion: ${derived.reason}`);
+      return null;
+    }
+    return derived.occasion;
+  }
+
+  if (derived.kind === 'undecidable') {
+    blocks.push(`occasion: the caller named ${JSON.stringify(named.kind)} and ${derived.reason}`);
+    return null;
+  }
+
+  const disagreement = occasionDisagreement(named, derived.occasion);
+  if (disagreement !== null) {
+    blocks.push(
+      `occasion: ${disagreement}. A caller may name its occasion and the gate checks it against the marker, which is the orchestrator's own record of where it is (SDD §4.5, D-115).`,
+    );
+    return null;
+  }
+
+  return named;
+}
+
+/**
  * Decides whether this commit may be created. Reports every failed condition,
  * because a caller told about one problem at a time fixes one problem at a
  * time.
@@ -378,13 +531,14 @@ export function checkCommit(
 ): CommitVerdict {
   const blocks: string[] = [];
   const baselineSource = checkDocuments(root, config, request.stagedPaths, blocks);
-  const greenSource = checkOccasion(
-    root,
-    config,
-    options.runVerification ?? runVerification,
-    request.occasion,
-    blocks,
-  );
+  const occasion = resolveOccasion(root, request, options.marker, blocks);
+
+  // A refused occasion still reports the document problems found above: a
+  // caller told about one problem at a time fixes one problem at a time.
+  const greenSource =
+    occasion === null
+      ? 'not-required'
+      : checkOccasion(root, config, options.runVerification ?? runVerification, occasion, blocks);
 
   return { allowed: blocks.length === 0, blocks, baselineSource, greenSource };
 }

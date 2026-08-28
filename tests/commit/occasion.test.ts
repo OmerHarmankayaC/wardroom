@@ -71,7 +71,6 @@ describe('the two occasions the marker answers', () => {
       occasion: {
         kind: 'closure',
         tourId: 'tour-4',
-        state: 'CLOSING',
         disposition: 'carried',
       },
     });

@@ -1,4 +1,5 @@
 import type { ClosureOccasion } from '../commit/gate.js';
+import type { CommitAttempt } from '../commit/make.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { recordClosureBaseline } from '../documents/baseline.js';
 import { appendAuditLine } from '../gates/audit.js';
@@ -59,7 +60,7 @@ export interface DriveClosingInput {
    * for, and the baseline is left alone: refreshing it without a commit would
    * record documents as a baseline that nothing has committed.
    */
-  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<void> | void;
+  readonly commitClosure?: (occasion: ClosureOccasion) => Promise<CommitAttempt> | CommitAttempt;
   readonly now?: () => Date;
 }
 
@@ -81,15 +82,26 @@ export type ClosingResult =
       /** The occasion the commit gate was asked about (§4.5, D-76). */
       readonly commitOccasion: ClosureOccasion;
       /**
-       * Whether the closure commit was asked for, and so whether the baseline
-       * was refreshed (§4.6 steps 7 and 8, D-77).
+       * Whether the closure commit was actually made, and so whether the
+       * baseline was refreshed (§4.6 steps 7 and 8, D-77).
        *
-       * Asked for, not made: the gate may refuse it. Reported rather than
-       * assumed, because a baseline refreshed against no commit describes
-       * documents nothing has committed, and §4.5 would then compare the next
-       * tour's staged documents against them.
+       * Made, not merely asked for. This used to be the presence of a
+       * committer, which reported `true` for a commit the gate had refused and
+       * sent step 8 on to refresh the baseline against documents nothing had
+       * committed: §4.5 would then compare the next tour's staged documents
+       * against a record of an unmade commit, which is a silent pass inside
+       * the mechanism that exists to prevent silent divergence.
        */
       readonly committed: boolean;
+      /**
+       * Why the commit was not made, one line per failed condition, empty
+       * where it was.
+       *
+       * Carried out of the drive rather than swallowed: a closure that could
+       * not commit its documents is the thing the owner most needs to be told,
+       * and the tour log records what happened rather than what was intended.
+       */
+      readonly commitBlocks: readonly string[];
     }
   | {
       readonly kind: 'gated';
@@ -245,14 +257,15 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
   // Step 7. One commit, at the closure occasion. The drive runs no git: it
   // names the occasion and the caller makes the commit, which §4.5 gates and
   // may refuse (D-76).
-  const commitOccasion: ClosureOccasion = {
-    kind: 'closure',
-    tourId,
-    state: 'CLOSING',
-    disposition,
-  };
-  const committed = input.commitClosure !== undefined;
-  if (input.commitClosure !== undefined) await input.commitClosure(commitOccasion);
+  const commitOccasion: ClosureOccasion = { kind: 'closure', tourId, disposition };
+  // Whether a commit was made, from the attempt and not from the presence of
+  // a committer. The two are not the same fact: the gate may refuse this
+  // commit, and reading "a committer exists" as "a commit happened" would send
+  // step 8 on to refresh the baseline against documents that were never
+  // committed, which is the silent pass D-77 exists to prevent.
+  const attempt = await input.commitClosure?.(commitOccasion);
+  const committed = attempt?.committed === true;
+  const commitBlocks = attempt?.blocks ?? [];
 
   // Step 8. The baseline the commit gate compares against, after that commit
   // and never before it (D-77), and only where git cannot supply one (§3.4,
@@ -273,6 +286,7 @@ export async function driveClosing(input: DriveClosingInput): Promise<ClosingRes
     tourLog,
     commitOccasion,
     committed,
+    commitBlocks,
   };
 }
 

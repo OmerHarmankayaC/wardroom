@@ -87,6 +87,34 @@ const boundary: JobBoundaryOccasion = {
   jobIndex: 6,
 };
 
+/**
+ * The marker the gate checks a named occasion against (D-115).
+ *
+ * Written to disk rather than passed in, because the whole point of the rule
+ * is that the caller's claim is checked against something the caller does not
+ * supply. Every case below therefore sets the orchestrator's state as well as
+ * the request, and the two disagreeing is itself a case.
+ */
+function markerAt(overrides: Partial<StateMarker> = {}): StateMarker {
+  return {
+    state: 'EXECUTING',
+    tourId: boundary.tourId,
+    jobIndex: boundary.jobIndex,
+    interruptedState: null,
+    attemptCount: 0,
+    gateId: null,
+    disposition: null,
+    headCommit: null,
+    updatedAt: '2026-08-21T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** Puts the orchestrator where the request says it is. */
+function orchestratorAt(overrides: Partial<StateMarker> = {}): void {
+  writeMarker(root, markerAt(overrides));
+}
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'wardroom-commit-'));
   mkdirSync(wardroomPaths(root).runDir, { recursive: true });
@@ -96,6 +124,9 @@ beforeEach(() => {
   write('README.md', '# example\n');
   git('add', 'README.md');
   git('commit', '-q', '-m', 'initial commit');
+  // The default: at the job boundary `boundary` names, which is the occasion
+  // most cases here are about. A case about another occasion moves it.
+  orchestratorAt();
 });
 
 afterEach(() => {
@@ -367,12 +398,20 @@ describe('the closure occasion (FR-7.1, D-76)', () => {
   const closure = {
     kind: 'closure' as const,
     tourId: 'tour-9',
-    state: 'CLOSING' as const,
     disposition: 'closed' as const,
   };
 
+  /** Puts the orchestrator in CLOSING, which is what makes this occasion real. */
+  function atClosure(
+    disposition: 'closed' | 'abandoned' | 'carried' = 'closed',
+    tourId = closure.tourId,
+  ): void {
+    orchestratorAt({ state: 'CLOSING', tourId, jobIndex: null, disposition });
+  }
+
   it('accepts the one commit a tour closes with', () => {
     const config = withTrackedDocuments('1.3');
+    atClosure();
 
     const verdict = checkCommit(root, config, { stagedPaths: [], occasion: closure });
 
@@ -384,6 +423,7 @@ describe('the closure occasion (FR-7.1, D-76)', () => {
     // before D-76, the gate would have blocked the one commit of a tour whose
     // whole purpose is the integrity check the gate performs.
     const config = withTrackedDocuments('1.3');
+    atClosure();
     write(join(TRACKED_DOCS, 'SRS.md'), srs('1.4', '## 1. Overview, rewritten'));
 
     const verdict = checkCommit(root, config, {
@@ -399,6 +439,7 @@ describe('the closure occasion (FR-7.1, D-76)', () => {
     // whose document moved without its version is the exact failure FR-6.1
     // exists for, arriving at the one commit that carries documents.
     const config = withTrackedDocuments('1.3');
+    atClosure();
     write(join(TRACKED_DOCS, 'SRS.md'), srs('1.3', '## 1. Overview, rewritten'));
 
     const verdict = checkCommit(root, config, {
@@ -410,16 +451,40 @@ describe('the closure occasion (FR-7.1, D-76)', () => {
     expect(verdict.blocks.join('\n')).toContain('SRS.md');
   });
 
-  it('refuses the occasion anywhere but CLOSING', () => {
+  it('refuses a closure the marker says is a job boundary (D-115)', () => {
+    // The caller may name its occasion and the gate checks the claim. The
+    // orchestrator here is mid-tour, so a commit calling itself a closure is a
+    // tour committing its documents without having been through the procedure
+    // that settles them (§4.6).
     const config = withTrackedDocuments('1.3');
+    orchestratorAt();
 
-    const verdict = checkCommit(root, config, {
-      stagedPaths: [],
-      occasion: { ...closure, state: 'EXECUTING' },
-    });
+    const verdict = checkCommit(root, config, { stagedPaths: [], occasion: closure });
 
     expect(verdict.allowed).toBe(false);
-    expect(verdict.blocks.join('\n')).toMatch(/CLOSING/);
+    expect(verdict.blocks.join('\n')).toMatch(/closure/);
+    expect(verdict.blocks.join('\n')).toMatch(/job-boundary/);
+    expect(verdict.blocks.join('\n')).toMatch(/D-115/);
+  });
+
+  it('refuses a closure whose disposition the marker does not carry (D-115)', () => {
+    const config = withTrackedDocuments('1.3');
+    atClosure('carried');
+
+    const verdict = checkCommit(root, config, { stagedPaths: [], occasion: closure });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toMatch(/disposition/);
+  });
+
+  it('refuses a closure for a tour the marker is not closing (D-115)', () => {
+    const config = withTrackedDocuments('1.3');
+    atClosure('closed', 'tour-8');
+
+    const verdict = checkCommit(root, config, { stagedPaths: [], occasion: closure });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.blocks.join('\n')).toMatch(/tour-8/);
   });
 
   it('runs no green definition, because the tour was verified before it got here', () => {
@@ -427,9 +492,11 @@ describe('the closure occasion (FR-7.1, D-76)', () => {
     // (D-35), so requiring green here would forbid the closure the disposition
     // exists for.
     let ran = 0;
+    const config = withTrackedDocuments('1.3');
+    atClosure('abandoned');
     const verdict = checkCommit(
       root,
-      withTrackedDocuments('1.3'),
+      config,
       { stagedPaths: [], occasion: { ...closure, disposition: 'abandoned' } },
       {
         runVerification: () => {
