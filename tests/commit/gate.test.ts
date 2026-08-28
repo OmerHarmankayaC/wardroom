@@ -898,3 +898,52 @@ describe('green is observed, not claimed (D-58)', () => {
     expect(seen).toEqual([['npm run test', 'npm run lint']]);
   });
 });
+
+describe('the verdict says why green was not observed, and the two reasons differ', () => {
+  it('reports `not-run` where the occasion never resolved', () => {
+    // The check did not happen, which is not the same as a requirement waived.
+    // Reporting the second as the first is how "no data" gets read as
+    // "nothing wrong", one field inside the mechanism that exists to stop
+    // exactly that.
+    const config = withTrackedDocuments('1.3');
+    orchestratorAt({ state: 'VERIFYING', jobIndex: null });
+
+    const verdict = checkCommit(root, config, { stagedPaths: [] });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.greenSource).toBe('not-run');
+  });
+
+  it('reports `not-required` where the occasion genuinely waives it', () => {
+    const config = withTrackedDocuments('1.3');
+    orchestratorAt({ state: 'CLOSING', tourId: 'tour-9', jobIndex: null, disposition: 'closed' });
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [],
+      occasion: { kind: 'closure', tourId: 'tour-9', disposition: 'closed' },
+    });
+
+    expect(verdict.allowed).toBe(true);
+    expect(verdict.greenSource).toBe('not-required');
+  });
+
+  it('reports `run` where it observed green itself', () => {
+    const config = withTrackedDocuments('1.3');
+
+    const verdict = checkCommit(root, config, { stagedPaths: [], occasion: boundary });
+
+    expect(verdict.greenSource).toBe('run');
+  });
+
+  it('reports `not-run` where the caller named an occasion the marker refuses', () => {
+    const config = withTrackedDocuments('1.3');
+    orchestratorAt();
+
+    const verdict = checkCommit(root, config, {
+      stagedPaths: [],
+      occasion: { kind: 'closure', tourId: 'tour-9', disposition: 'closed' },
+    });
+
+    expect(verdict.greenSource).toBe('not-run');
+  });
+});

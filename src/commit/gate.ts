@@ -179,15 +179,25 @@ export interface CommitVerdict {
    */
   readonly baselineSource: 'head' | 'doc-baseline.json' | 'no-baseline' | 'none';
   /**
-   * Where the green status came from. `run` is the only value that can satisfy
-   * a job boundary; `not-required` is the WIP stop, which is a stop with
-   * unfinished work and is exactly when the suite is expected to be red.
+   * Where the green status came from.
+   *
+   * `run` is the only value that can satisfy a job boundary. `not-required` is
+   * the closure and the WIP stop: the first was verified before it got here,
+   * and the second is a stop with unfinished work, which is exactly when the
+   * suite is expected to be red.
+   *
+   * `not-run` is neither. It is a commit whose occasion the gate could not
+   * settle at all, so the question of green was never reached, and it is kept
+   * apart from `not-required` because those say opposite things: one is a
+   * requirement waived on purpose and the other is a check that never
+   * happened. Reporting the second as the first is how "no data" gets read as
+   * "nothing wrong", which is the failure this whole verdict exists to avoid.
    *
    * Stated in the verdict so a reader never has to infer whether the gate
    * observed green or was told it, which is the distinction D-58 exists to
    * make and the one a boolean in the request cannot carry.
    */
-  readonly greenSource: 'run' | 'not-required';
+  readonly greenSource: 'run' | 'not-required' | 'not-run';
 }
 
 function isJobBoundary(occasion: CommitOccasion): occasion is JobBoundaryOccasion {
@@ -537,7 +547,10 @@ export function checkCommit(
   // caller told about one problem at a time fixes one problem at a time.
   const greenSource =
     occasion === null
-      ? 'not-required'
+      ? // The occasion never resolved, so nothing about green was asked. Not
+        // `not-required`: that would report a check that did not happen as a
+        // requirement deliberately waived.
+        ('not-run' as const)
       : checkOccasion(root, config, options.runVerification ?? runVerification, occasion, blocks);
 
   return { allowed: blocks.length === 0, blocks, baselineSource, greenSource };
