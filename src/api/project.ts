@@ -6,7 +6,7 @@ import type { Notifier } from '../gates/notify.js';
 import { createDriverSessions } from '../loop/driver-sessions.js';
 import { type RunOutcome, type WipStop, runCycle } from '../loop/run.js';
 import { createSessionWiring, markerOnDisk } from '../loop/wiring.js';
-import type { QueryFn } from '../roles/assembly.js';
+import { type QueryFn, RoleSessionRefusedError } from '../roles/assembly.js';
 import { type InboxLine, appendInbox } from '../state/inbox.js';
 import { type TourState, readMarker } from '../state/marker.js';
 import { requestStop } from '../state/stop-request.js';
@@ -84,6 +84,18 @@ function closureCommitMessage(occasion: ClosureOccasion): string {
  * sessions come from the wiring, which is the only thing that touches the SDK.
  */
 export async function projectRun(root: string, input: RunInput): Promise<RunOutcome> {
+  // Refused here rather than at the first session (D-85, D-111). The type
+  // already requires the seam, so this is for the caller TypeScript does not
+  // see: JavaScript, or an input built dynamically. Refusing late would be
+  // worse than refusing at all, because a cycle can raise a gate, park, or
+  // commit before it ever opens a session, and the caller would learn its
+  // mistake after the run had already changed the repository.
+  if (typeof input.query !== 'function') {
+    throw new RoleSessionRefusedError(
+      'project.run needs the SDK seam and none was supplied. It is a required parameter with no default anywhere under src/, because a default is a path that reaches the live API without anyone passing it (SDD §5.1, D-85, D-111).',
+    );
+  }
+
   const config = loadConfig(root);
   const wiring = createSessionWiring({
     root,
