@@ -213,8 +213,10 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
    * cycle that resumed into `VERIFYING` or `CLOSING` finds it on disk.
    */
   let disposition: TourDisposition | null = null;
-  /** Whether the closure asked for its commit (§4.6 step 7). */
+  /** Whether the closure commit was made (§4.6 step 7). */
   let closureCommitRequested = false;
+  /** Why it was not, where it was not, so the outcome can say (§4.5). */
+  let closureBlocks: readonly string[] = [];
   /** Set once the cycle has closed a tour, which is where an invocation ends. */
   let closed = false;
 
@@ -266,6 +268,16 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
               visited,
               disposition,
               closureCommitRequested,
+              // A refused closure commit is the thing the owner most needs to
+              // be told, and the tour still reaches IDLE: §4.4's table already
+              // answers that window, the cleared block sitting uncommitted in
+              // the tree with the tour log as the record. Reporting the
+              // closure without it would say the tour closed and leave the one
+              // commit carrying its documents unmade and unmentioned.
+              reason:
+                closureBlocks.length === 0
+                  ? null
+                  : `the tour closed, and its closure commit was refused:\n  - ${closureBlocks.join('\n  - ')}`,
             });
           }
 
@@ -400,6 +412,7 @@ export async function runCycle(input: RunCycleInput): Promise<RunOutcome> {
           if (result.kind === 'closed') {
             disposition = result.disposition;
             closureCommitRequested = result.committed;
+            closureBlocks = result.commitBlocks;
             closed = true;
           }
           // Where the drive raised a scope-change gate instead, the marker

@@ -264,6 +264,15 @@ export function renderRun(outcome: RunOutcome): string[] {
           ? 'The project is at a closed boundary and no tour was open to run.'
           : `The tour closed (${outcome.disposition}). One invocation drives one cycle, so the next tour is planned by the next run.`,
       );
+      if (outcome.disposition !== null && !outcome.closureCommitRequested) {
+        // The one commit of a tour that carries its documents, and it was not
+        // made. Said plainly rather than left to be noticed: the cleared block
+        // and the tour log are sitting in the working tree.
+        lines.push(
+          outcome.reason ??
+            'Its closure commit was not made, so the documents, the tour log and the cleared block are uncommitted in the working tree.',
+        );
+      }
       break;
     case 'gated':
       lines.push(

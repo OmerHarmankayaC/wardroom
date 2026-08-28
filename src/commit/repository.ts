@@ -45,8 +45,21 @@ function git(root: string, args: string[]): string {
  * comes from the policy rather than being spelled again here.
  */
 export function stageAll(root: string, trackRuntime: boolean): void {
-  const excluded = trackRuntime ? [] : [`:(exclude)${RUNTIME_IGNORE_ENTRY}`];
-  git(root, ['add', '-A', '--', '.', ...excluded]);
+  git(root, ['add', '-A']);
+  if (trackRuntime) return;
+
+  // Unstaged after the fact rather than excluded by pathspec. An
+  // `:(exclude)` pathspec *names* the path, and naming a path `.gitignore`
+  // already covers is an error rather than a no-op, so the belt broke every
+  // repository wearing the braces. `add -A` honours `.gitignore` on its own;
+  // this is only for the project whose ignore entry was never written, and
+  // where nothing matched it does nothing.
+  try {
+    git(root, ['reset', '--quiet', '--', RUNTIME_IGNORE_ENTRY]);
+  } catch {
+    // A repository with no commits has no HEAD to reset against, and there
+    // the index is emptied wholesale by `unstageAll` if it comes to that.
+  }
 }
 
 /**
